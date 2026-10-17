@@ -1,0 +1,21 @@
+{
+  "name": "smd-send-me-deliveries",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.3.0",
+    "nodemailer": "^7.0.13"
+  },
+  "description": "Send Me Deliveries: Node/Express + SQLite backend with server-side auth",
+  "main": "server.js"
+}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- DEBUG BUILDS ONLY: lets the app talk to http://10.0.2.2:3000 or your LAN address. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Send Me Deliveries (SMD)</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E%F0%9F%93%A6%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Baloo+2:wght@600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="wrap">
+<header><div class="logo">SMD</div><div><h1>Send Me Deliveries</h1><small>Mombasa · Likoni · Kombani · Tiwi · Ukunda · Diani</small></div></header>
+
+<section id="v-auth" class="view on">
+  <div class="card hero"><h2 id="aT">Welcome back</h2><p id="aS">Log in to send and track deliveries.</p>
+    <div class="slg" data-slg></div><svg id="authMap" viewBox="0 0 320 210" width="100%" role="img" aria-label="Map of SMD service areas"></svg></div>
+  <div class="card">
+    <div id="g-role"><label>I am a</label><div class="seg" id="roleSeg"><button type="button" data-r="sender" class="on">📦 Sender</button><button type="button" data-r="shipper">🏍️ Shipper</button></div><p class="note" id="roleNote"></p></div>
+    <div id="g-name"><label for="a-name">Full name</label><input id="a-name" maxlength="60" autocomplete="name"></div>
+    <div id="g-phone"><label for="a-phone">Phone</label><input id="a-phone" type="tel" inputmode="tel" placeholder="0712 345 678" autocomplete="tel"></div>
+    <div id="g-ship" style="display:none"><div class="row"><div><label for="a-veh">Vehicle</label><select id="a-veh"></select></div><div><label for="a-area">Base area</label><select id="a-area"></select></div></div>
+      <label for="a-idt">ID type</label><select id="a-idt"></select>
+      <label for="a-idn">ID number</label><input id="a-idn" maxlength="20" autocapitalize="characters" autocomplete="off">
+      <div class="row"><div><label for="a-dob">Date of birth</label><input id="a-dob" type="date"></div><div><label for="a-addr">Home address</label><input id="a-addr" maxlength="120" autocomplete="street-address"></div></div>
+      <p class="note">You will upload photos of your ID after confirming your email. An admin checks them before you can see jobs.</p></div>
+    <div id="g-cred"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" autocapitalize="none">
+    <label for="a-pw" id="l-pw">Password</label><input id="a-pw" type="password" autocomplete="current-password"></div>
+    <div id="g-code" style="display:none"><label for="a-code" id="l-code">Reset code</label><input id="a-code" autocomplete="one-time-code" maxlength="12" autocapitalize="characters"></div>
+    <div class="err" id="aErr" role="alert"></div>
+    <button class="btn" id="aBtn">Log in</button>
+    <div style="display:flex;justify-content:space-between;margin-top:6px"><button class="lnk" id="aSw">New here? Sign up</button><button class="lnk" id="aFg">Forgot password?</button></div>
+    <div id="g-google"><div class="or"><span>or</span></div><div id="gBtn"></div><p class="gnote" id="gNote"></p></div>
+  </div>
+</section>
+
+<section id="v-home" class="view">
+  <div class="card hero"><h2 id="hi">Hi!</h2><p>Order from local shops. Pay on delivery. Track every step.</p>
+    <div class="slg" data-slg></div><svg id="homeMap" viewBox="0 0 320 210" width="100%" role="img" aria-label="Service area map"></svg>
+    <button class="btn" data-go="new">+ Request delivery</button></div>
+  <div class="stats">
+    <div class="card stat"><b id="s1">0</b><span>Total</span></div>
+    <div class="card stat"><b id="s2">0</b><span>Active</span></div>
+    <div class="card stat"><b id="s3">0</b><span>Completed</span></div>
+  </div>
+  <div class="card"><b>Recent</b><div id="recent" style="margin-top:8px"></div></div>
+</section>
+
+<section id="v-new" class="view">
+  <div class="card">
+    <b>Route</b>
+    <svg id="formMap" viewBox="0 0 320 210" width="100%" role="img" aria-label="Selected route"></svg>
+    <label for="from">Pickup area</label><select id="from"></select>
+    <label for="shopSel">Shop</label><select id="shopSel"></select>
+    <div id="otherWrap" style="display:none"><label for="shopOther">Shop name</label><input id="shopOther" maxlength="60" placeholder="Type the shop name"></div>
+    <label for="land">Pickup landmark (optional)</label><input id="land" maxlength="100" placeholder="e.g. next to the petrol station">
+    <div id="pin-pick"></div>
+    <label for="to">Drop-off area</label><select id="to"></select>
+    <label for="drop">Drop-off location</label><input id="drop" maxlength="100" placeholder="e.g. Sea Lodge Road, blue gate">
+    <div id="pin-drop"></div>
+  </div>
+  <div class="card" id="goodsCard" style="display:none">
+    <b>Popular goods</b>
+    <p class="note">Prices are per unit. Tap + to add what you want; the cost is added to your delivery fee.</p>
+    <div id="goods"></div>
+  </div>
+  <div class="card">
+    <b>Item details</b>
+    <label for="it" id="l-it">Item name</label><input id="it" maxlength="80" placeholder="e.g. Groceries, medicine, documents">
+    <label for="wt">Item weight</label><select id="wt"></select>
+    <div class="row"><div><label for="rn">Recipient name</label><input id="rn" maxlength="60"></div><div><label for="rp">Recipient phone</label><input id="rp" type="tel" inputmode="tel" placeholder="0712 345 678"></div></div>
+    <label>Speed</label>
+    <div class="seg" id="spd"><button type="button" data-s="standard" class="on">🚚 Standard</button><button type="button" data-s="express">⚡ Express (+60%)</button></div>
+    <div class="err" id="err" role="alert"></div>
+  </div>
+  <div class="card">
+    <b>Price tracker</b>
+    <div class="price"><b id="total">KES 0</b><span id="dist"></span></div>
+    <p class="note" id="sumLine" style="margin-top:2px"></p>
+    <div class="bar"><i id="b1" style="background:var(--pri)"></i><i id="b2" style="background:var(--acc)"></i><i id="b3" style="background:var(--ok)"></i><i id="b4" style="background:#1e90ff"></i></div>
+    <div class="leg"><em><span class="dot" style="background:var(--pri)"></span>Route <span id="l1"></span></em><em><span class="dot" style="background:var(--acc)"></span>Weight <span id="l2"></span></em><em><span class="dot" style="background:var(--ok)"></span>Express <span id="l3"></span></em><em><span class="dot" style="background:#1e90ff"></span>Ferry <span id="l4"></span></em></div>
+    <p class="note" id="payNote">💵 Pay on delivery. Item cost is not included: this is the delivery fee only.</p>
+    <button class="btn" id="submit">Submit request</button>
+  </div>
+</section>
+
+<section id="v-hist" class="view">
+  <div class="card"><label for="q" style="margin-top:0">Search by tracking ID</label><input id="q" placeholder="SMD-XXXXXX" autocapitalize="characters"></div>
+  <div id="list"></div>
+</section>
+
+<section id="v-jobs" class="view">
+  <div class="card hero"><h2 id="hj">Hi!</h2><p>Accept a job, collect, deliver, get paid on delivery.</p><div class="slg" data-slg></div></div>
+  <div class="card"><label for="jf" style="margin-top:0">Pickup area</label><select id="jf"></select></div>
+  <div id="jlist"></div>
+</section>
+
+<section id="v-mine" class="view"><div id="mlist"></div></section>
+
+<section id="v-verify" class="view">
+  <div class="card hero"><h2 id="vT">Verify your identity</h2><p id="vS"></p></div>
+  <div class="card" id="vForm">
+    <b>ID details</b>
+    <label for="v-idt">ID type</label><select id="v-idt"></select>
+    <label for="v-idn">ID number</label><input id="v-idn" maxlength="20" autocapitalize="characters" autocomplete="off">
+    <div class="row"><div><label for="v-dob">Date of birth</label><input id="v-dob" type="date"></div><div><label for="v-addr">Home address</label><input id="v-addr" maxlength="120"></div></div>
+    <b style="display:block;margin-top:18px">ID photos</b>
+    <p class="note">Use good light and make sure every detail is readable. Photos are stored privately and only seen by SMD admins.</p>
+    <div id="v-docs"></div>
+    <div class="err" id="vErr" role="alert"></div>
+    <button class="btn" id="vSubmit">Submit for review</button>
+  </div>
+  <div class="card" id="vWait" style="display:none"><b>What happens next?</b><p class="note">We email you as soon as an admin decides. This screen also updates by itself, so you can leave it open.</p></div>
+</section>
+
+<section id="v-admin" class="view">
+  <div class="card hero"><h2>Shipper review</h2><p>Check each shipper's details and ID photos before they can see jobs.</p></div>
+  <div class="card"><div class="seg three" id="aTabs"><button type="button" data-t="pending" class="on">Pending</button><button type="button" data-t="approved">Approved</button><button type="button" data-t="rejected">Rejected</button></div></div>
+  <div id="alist"></div>
+</section>
+
+<section id="v-shops" class="view">
+  <div class="card hero"><h2>Shops &amp; prices</h2><p>Recommended shops show first for senders. Goods are priced per unit and added to the delivery fee. The shops and goods you see at first are samples: change or delete them.</p></div>
+  <div class="card"><b>Add a shop</b>
+    <div class="row"><div><label for="ns-area">Area</label><select id="ns-area"></select></div><div><label for="ns-name">Shop name</label><input id="ns-name" maxlength="60"></div></div>
+    <div class="err" id="nsErr" role="alert"></div><button class="btn" id="ns-add">Add shop</button></div>
+  <div class="card"><label for="sf" style="margin-top:0">Show area</label><select id="sf"></select></div>
+  <div id="slist"></div>
+</section>
+
+<section id="v-set" class="view">
+  <div class="card"><b>Profile</b>
+    <label for="p-role">Account type</label><input id="p-role" readonly>
+    <label for="p-name">Full name</label><input id="p-name" maxlength="60"><p class="note" id="p-lock" style="display:none">Your name is locked because it must match your ID.</p>
+    <label for="p-phone">Phone</label><input id="p-phone" type="tel" inputmode="tel">
+    <label for="p-email">Email</label><input id="p-email" readonly>
+    <div class="err" id="pErr" role="alert"></div>
+    <button class="btn" id="pSave">Save changes</button></div>
+  <div class="card"><b>Payment</b><p class="note">Pay on delivery is the only option for now. Senders pay the shipper in cash or M-Pesa when the item arrives.</p></div>
+  <div class="card"><button class="btn sec dng" id="out" style="margin-top:0">Log out</button></div>
+</section>
+</div>
+
+<nav id="nav"><div>
+  <button data-go="home" data-r="sender"><span>🏠</span>Home</button>
+  <button data-go="new" data-r="sender"><span>➕</span>Request</button>
+  <button data-go="hist" data-r="sender"><span>🕘</span>History</button>
+  <button data-go="jobs" data-r="shipper"><span>📋</span>Jobs</button>
+  <button data-go="mine" data-r="shipper"><span>🏍️</span>My jobs</button>
+  <button data-go="verify" data-r="shipper"><span>🪪</span>Verify</button>
+  <button data-go="admin" data-r="admin"><span>🛡️</span>Review</button>
+  <button data-go="shops" data-r="admin"><span>🏪</span>Shops</button>
+  <button data-go="set"><span>⚙️</span>Settings</button>
+</div></nav>
+<div class="toast" id="toast"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

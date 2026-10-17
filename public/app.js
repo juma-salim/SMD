@@ -1,0 +1,382 @@
+(function(){
+"use strict";
+var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],GOOGLE_CLIENT_ID="";
+var STEPS=["Pending","In Progress","Completed"],OTHER="__other__";
+var speed="standard",mode="login",role="sender",me=null,busy=false,pins={pick:null,drop:null},myShops=[],cache={mine:[],jobs:[],jm:[]},pendingG=null,resendAt=0,adminTab="pending",docVer={},catalog=[],cart={},cartShop=null,lastQ=null,shopOpen={},adminShops=[];
+function $(i){return document.getElementById(i)}
+function el(t,c,txt){var e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e}
+function toast(m){var t=$("toast");t.textContent=m;t.classList.add("on");clearTimeout(toast.t);toast.t=setTimeout(function(){t.classList.remove("on")},2800)}
+function fmt(n){return "KES "+n.toLocaleString("en-KE")}
+function quote(f,t,w,s){var d=Math.abs(AREAS[f].pos-AREAS[t].pos),route=f===t?P.local:P.base+Math.round(d*P.perKm),
+  ferry=(f!==t&&((f==="Mombasa")!==(t==="Mombasa")))?P.ferry:0,wf=WT[w].f,sub=route+wf+ferry,ex=s==="express"?Math.round(sub*P.expressPct):0;
+  return{d:d,route:route,wf:wf,ferry:ferry,ex:ex,total:Math.round((sub+ex)/10)*10}}
+function norm(p){return p.replace(/[\s\-()]/g,"")}
+function phoneOk(p){return /^(\+?254|0)[17]\d{8}$/.test(norm(p))}
+function emailOk(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)}
+/* Server API: session lives in an HttpOnly cookie the page cannot read */
+function api(method,path,body){
+  var opt={method:method,credentials:"same-origin",headers:{}};
+  if(method!=="GET"){opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body||{})}
+  return fetch("/api"+path,opt).then(function(r){return r.json().catch(function(){return{}}).then(function(j){
+    if(!r.ok){var e=new Error(j.error||"Request failed.");e.status=r.status;e.data=j;if(r.status===401&&me&&path.indexOf("/auth/")!==0)sessionEnded();throw e}return j})},
+    function(){throw new Error("Cannot reach the server. Check your connection.")})}
+function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
+function resetLocal(){me=null;myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
+  ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","shopOther","land","drop","it","rn","rp","q"].forEach(function(i){$(i).value=""});
+  pins.pick=null;pins.drop=null;setRole("sender");setMode("login");show("auth")}
+
+/* Map */
+function order(){return Object.keys(AREAS).sort(function(a,b){return AREAS[a].pos-AREAS[b].pos})}
+/* stops from a to b, in route order, including every stop in between */
+function stops(f,t){var o=order(),i=o.indexOf(f),j=o.indexOf(t);return i<=j?o.slice(i,j+1):o.slice(j,i+1).reverse()}
+/* smooth path through the points: straight runs with rounded corners at each stop */
+function pathThrough(pts){var d="M"+pts[0].x+" "+pts[0].y;if(pts.length<2)return d;
+  for(var i=1;i<pts.length-1;i++){var c=pts[i],n=pts[i+1],mx=(c.x+n.x)/2,my=(c.y+n.y)/2,pv=pts[i-1];
+    if(i===1)d+=" L"+((pv.x+c.x)/2)+" "+((pv.y+c.y)/2);d+=" Q"+c.x+" "+c.y+" "+mx+" "+my}
+  var e=pts[pts.length-1];return d+" L"+e.x+" "+e.y}
+function dots(via){var s="";via=via||[];for(var n in AREAS){var c=AREAS[n],l=c.side==="l",on=via.indexOf(n)>-1;
+  s+='<circle cx="'+c.x+'" cy="'+c.y+'" r="5" fill="'+(on?"var(--pri)":"var(--mut)")+'"/><text x="'+(l?c.x-9:c.x+9)+'" y="'+(c.y+4)+'" text-anchor="'+(l?"end":"start")+'">'+n+'</text>'}return s}
+function drawMap(svg,f,t){
+  var s='<rect width="320" height="210" rx="14" fill="var(--land)"/><path d="M320 0L240 0L232 30L218 60L204 100L198 130L180 160L208 210L320 210Z" fill="var(--sea)"/><text class="sea" x="268" y="110" text-anchor="middle">Indian Ocean</text>',p,o=order();
+  if(f&&t&&f!==t){var st=stops(f,t),pts=st.map(function(n){return AREAS[n]}),a=AREAS[f],b=AREAS[t];p=pathThrough(pts);
+    s+='<path class="route" d="'+p+'"/>'+dots(st)+'<circle class="pulse" cx="'+a.x+'" cy="'+a.y+'" r="6" fill="var(--pri)"/><circle cx="'+b.x+'" cy="'+b.y+'" r="7" fill="var(--ok)"/>'}
+  else if(f&&t){var c=AREAS[f];p="M"+(c.x-14)+" "+(c.y+14)+" q14 -22 28 0 q-14 22 -28 0";s+=dots()+'<circle class="pulse" cx="'+c.x+'" cy="'+c.y+'" r="7" fill="var(--pri)"/>'}
+  else{p=pathThrough(o.map(function(n){return AREAS[n]}));s+='<path class="route" d="'+p+'" opacity=".6"/>'+dots()}
+  s+='<g><text x="-8" y="6" style="font-size:16px">🚚</text><animateMotion dur="'+(f&&t?"3.5s":"7s")+'" repeatCount="indefinite" path="'+p+'"/></g>';
+  svg.innerHTML=s}
+
+/* Pin location (share GPS or paste a Google Maps link; opens in Google Maps) */
+function mapsUrl(p){return "https://www.google.com/maps/search/?api=1&query="+p.lat+","+p.lng}
+function dirUrl(p){return "https://www.google.com/maps/dir/?api=1&destination="+p.lat+","+p.lng}
+function inArea(a,b){return a>BOX.latMin&&a<BOX.latMax&&b>BOX.lngMin&&b<BOX.lngMax}
+function pinChip(p,label,nav){var d=el("div","pin"),t=el("div","t"),a=el("a",null,nav?"Navigate":"Open");
+  d.appendChild(el("div","ic","📍"));t.appendChild(el("b",null,label));t.appendChild(el("small",null,p.lat.toFixed(5)+", "+p.lng.toFixed(5)));d.appendChild(t);
+  a.href=nav?dirUrl(p):mapsUrl(p);a.target="_blank";a.rel="noopener noreferrer";a.addEventListener("click",function(e){e.stopPropagation()});d.appendChild(a);return d}
+function pinBlock(key,box,title){
+  function draw(){box.textContent="";var cur=pins[key];
+    if(cur){box.appendChild(pinChip(cur,title+" pinned",false));var rm=el("button","lnk","Remove pin");rm.type="button";rm.onclick=function(){pins[key]=null;draw()};box.appendChild(rm);return}
+    var lab="📍 Share my current location",b=el("button","btn sec",lab),msg=el("div","note"),inp=el("input");b.type="button";
+    inp.placeholder="…or paste a Google Maps link or coordinates";inp.style.marginTop="8px";inp.setAttribute("aria-label",title+" Google Maps link");
+    function setPin(lat,lng){if(!isFinite(lat)||!isFinite(lng)||!inArea(lat,lng)){msg.textContent="That location is outside our service area (Mombasa to Diani).";return}
+      pins[key]={lat:Math.round(lat*1e6)/1e6,lng:Math.round(lng*1e6)/1e6};draw()}
+    b.onclick=function(){if(!navigator.geolocation){msg.textContent="Location is not available here. Paste a Google Maps link instead.";return}
+      b.disabled=true;b.textContent="Finding you…";msg.textContent="";
+      navigator.geolocation.getCurrentPosition(function(r){b.disabled=false;b.textContent=lab;setPin(r.coords.latitude,r.coords.longitude)},
+        function(e){b.disabled=false;b.textContent=lab;msg.textContent=e.code===1?"Location access is blocked. Allow it in your browser settings, or paste a Google Maps link.":"Could not get your location. Try again outdoors or paste a Google Maps link."},
+        {enableHighAccuracy:true,timeout:15000,maximumAge:0})};
+    inp.addEventListener("change",function(){var v=inp.value,m=v.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/)||v.match(/(-?\d{1,2}\.\d{3,})\s*[,;]\s*(-?\d{1,3}\.\d{3,})/);
+      if(!m){msg.textContent="No coordinates found. Short links (maps.app.goo.gl) cannot be read: open it and copy the full link, or share your location.";return}
+      setPin(parseFloat(m[1]),parseFloat(m[2]))});
+    box.appendChild(b);box.appendChild(inp);box.appendChild(msg)}
+  draw()}
+function initPins(){pins.pick=null;pins.drop=null;pinBlock("pick",$("pin-pick"),"Pickup");pinBlock("drop",$("pin-drop"),"Drop-off")}
+
+/* Navigation & roles */
+var VIEWS=["auth","home","new","hist","jobs","mine","verify","admin","shops","set"],SENDER=["home","new","hist"],SHIPPER=["jobs","mine"];
+function show(v){VIEWS.forEach(function(k){$("v-"+k).classList.toggle("on",k===v)});$("nav").classList.toggle("on",v!=="auth");
+  document.querySelectorAll("#nav button").forEach(function(b){b.classList.toggle("on",b.dataset.go===v)});window.scrollTo(0,0)}
+function go(v){if(!me){show("auth");return}
+  if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="set")v="admin"}
+  else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops")v="jobs"}
+  else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops")v="home";
+  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops()}
+/* bottom bar: admins see Review; shippers see Verify until an admin approves them, then Jobs */
+function navFor(u){document.querySelectorAll("#nav button[data-r]").forEach(function(b){var h=b.dataset.r!==u.role;
+  if(!h&&u.role==="shipper"){var ap=u.status==="approved";h=b.dataset.go==="verify"?ap:!ap}b.classList.toggle("hide",h)})}
+function refreshMe(){return api("GET","/me").then(function(j){var old=me&&me.status,cur=document.querySelector(".view.on"),id=cur?cur.id:"";me=j.user;navFor(me);
+  if(me.role==="shipper"&&old!==me.status&&["v-verify","v-jobs","v-mine"].indexOf(id)>-1){
+    if(me.status==="approved"){toast("You are approved! You can now accept jobs.");$("jf").value=me.area||"all"}go("verify")}},function(){})}
+document.addEventListener("click",function(e){var g=e.target.closest("[data-go]");if(g)go(g.dataset.go)});
+
+/* Auth */
+function setRole(r){role=r;document.querySelectorAll("#roleSeg button").forEach(function(b){b.classList.toggle("on",b.dataset.r===r)});
+  $("g-ship").style.display=((mode==="signup"||mode==="gsetup")&&r==="shipper")?"block":"none";
+  $("roleNote").textContent=r==="sender"?"Request deliveries from local shops.":"Accept delivery jobs and get paid on delivery."}
+function setMode(m){mode=m;$("aErr").textContent="";
+  var T={login:["Welcome back","Log in to continue.","Log in","New here? Sign up"],signup:["Create account","Choose your account type to begin.","Sign up","Have an account? Log in"],
+    forgot:["Reset password","Enter your email and we will send you a reset code.","Send reset code","Back to log in"],
+    reset:["Enter reset code","Enter the code we sent and choose a new password.","Reset password","Back to log in"],
+    gsetup:["Almost there","Finish setting up your account.","Create my account","Cancel"],
+    verify:["Verify your email","Enter the 6-digit code we sent to your email.","Verify email","Back to log in"]}[m];
+  $("aT").textContent=T[0];$("aS").textContent=T[1];$("aBtn").textContent=T[2];$("aSw").textContent=T[3];
+  var gs=m==="gsetup",sg=m==="signup"||gs;$("g-role").style.display=sg?"block":"none";$("g-name").style.display=sg?"block":"none";$("g-phone").style.display=sg?"block":"none";
+  $("g-cred").style.display=gs?"none":"block";var vf=m==="verify";$("g-code").style.display=(m==="reset"||vf)?"block":"none";$("l-code").textContent=vf?"Verification code":"Reset code";$("a-code").maxLength=vf?6:12;$("a-code").inputMode=vf?"numeric":"text";$("a-email").readOnly=vf;
+  var nopw=m==="forgot"||vf;$("a-pw").style.display=nopw?"none":"block";$("l-pw").style.display=nopw?"none":"block";
+  $("g-google").style.display=(m==="login"||m==="signup")?"block":"none";
+  $("l-pw").textContent=m==="reset"?"New password":"Password";$("a-pw").autocomplete=m==="login"?"current-password":"new-password";
+  $("aFg").style.display=(m==="login"||vf)?"inline":"none";$("aFg").textContent=vf?"Resend code":"Forgot password?";setRole(role);renderG()}
+$("roleSeg").addEventListener("click",function(e){var b=e.target.closest("button");if(b)setRole(b.dataset.r)});
+$("aSw").addEventListener("click",function(){pendingG=null;setMode(mode==="login"?"signup":"login")});
+$("aFg").addEventListener("click",function(){if(mode==="verify")return resendCode();setMode("forgot")});
+$("a-code").addEventListener("keydown",function(e){if(e.key==="Enter")$("aBtn").click()});
+function toVerify(email,msg){busy=false;$("aBtn").disabled=false;$("a-pw").value="";$("a-code").value="";setMode("verify");$("a-email").value=email;$("aS").textContent=msg;resendAt=Date.now()+60000;$("a-code").focus()}
+function resendCode(){var em=$("a-email").value.trim().toLowerCase();if(Date.now()<resendAt){toast("Please wait a minute before asking for another code.");return}
+  resendAt=Date.now()+60000;api("POST","/auth/resend",{email:em}).then(function(){toast("If this email is waiting for verification, a new code was sent.")},function(e){toast(e.message)})}
+$("a-pw").addEventListener("keydown",function(e){if(e.key==="Enter")$("aBtn").click()});
+function aerr(m){$("aErr").textContent=m;busy=false;$("aBtn").disabled=false}
+function work(){busy=true;$("aBtn").disabled=true}
+function shipFields(b){if(role==="shipper"){b.veh=$("a-veh").value;b.area=$("a-area").value;b.idType=$("a-idt").value;b.idNumber=$("a-idn").value.trim();b.dob=$("a-dob").value;b.address=$("a-addr").value.trim()}return b}
+function shipCheck(){if(role!=="shipper")return"";if(!/^[A-Za-z0-9\/\s-]{5,20}$/.test($("a-idn").value.trim()))return"Enter your ID number.";if(!$("a-dob").value)return"Enter your date of birth.";if($("a-addr").value.trim().length<5)return"Enter your home address.";return""}
+$("aBtn").addEventListener("click",function(){
+  if(busy)return;var name=$("a-name").value.trim(),ph=$("a-phone").value.trim(),em=$("a-email").value.trim().toLowerCase(),pw=$("a-pw").value,code=$("a-code").value.trim();
+  $("aErr").textContent="";
+  if(mode==="gsetup")return gFinish(name,ph);
+  if(!emailOk(em))return aerr("Enter a valid email address.");
+  var fl=function(e){aerr(e.message)};
+  if(mode==="verify"){if(!/^\d{6}$/.test(code))return aerr("Enter the 6-digit code from your email.");work();
+    return api("POST","/auth/verify",{email:em,code:code}).then(function(j){start(j.user)}).catch(fl)}
+  if(mode==="forgot"){work();return api("POST","/auth/forgot",{email:em}).then(function(){busy=false;$("aBtn").disabled=false;toast("If that account exists, a reset code was sent.");setMode("reset")}).catch(fl)}
+  if(mode==="reset"){if(code.length<6)return aerr("Enter the reset code.");if(pw.length<8)return aerr("Password must be at least 8 characters.");work();
+    return api("POST","/auth/reset",{email:em,code:code,password:pw}).then(function(){busy=false;$("aBtn").disabled=false;$("a-pw").value="";$("a-code").value="";toast("Password updated. Log in.");setMode("login")}).catch(fl)}
+  if(mode==="login"&&!pw)return aerr("Enter your password.");
+  if(mode==="signup"){if(pw.length<8)return aerr("Password must be at least 8 characters.");if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck();if(se)return aerr(se)}
+  work();
+  var req=mode==="signup"?api("POST","/auth/signup",shipFields({name:name,phone:ph,email:em,password:pw,role:role})):api("POST","/auth/login",{email:em,password:pw});
+  req.then(function(j){if(j.needsVerify)return toVerify(j.email,"We sent a 6-digit code to "+j.email+". Enter it to continue.");start(j.user)})
+    .catch(function(e){if(e.data&&e.data.needsVerify)return toVerify(e.data.email||em,e.message);fl(e)})});
+function start(u,shops){
+  me=u;myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr"].forEach(function(i){$(i).value=""});navFor(u);
+  var f=u.name.split(" ")[0];$("hi").textContent="Hi, "+f+"!";$("hj").textContent="Hi, "+f+"!";
+  if(u.role==="sender"){initPins();if(!shops)api("GET","/me").then(function(j){myShops=j.shops;fillShops()},function(){});fillShops();loadCatalog()}else if(u.role==="shipper")$("jf").value=u.area||"all";
+  go(u.role==="admin"?"admin":u.role==="shipper"?"jobs":"home")}
+$("out").addEventListener("click",function(){api("POST","/auth/logout").catch(function(){}).then(function(){resetLocal();toast("Logged out")})});
+
+/* Google sign-in (token is verified by the server) */
+var gReady=false;
+function renderG(){if(!gReady)return;var b=$("gBtn");b.textContent="";google.accounts.id.renderButton(b,{theme:"outline",size:"large",shape:"pill",text:mode==="signup"?"signup_with":"continue_with",width:Math.max(200,Math.min(360,b.clientWidth||300))})}
+function loadG(){if(!GOOGLE_CLIENT_ID){$("gNote").textContent="Google sign-in is not enabled on this server.";return}
+  var sc=document.createElement("script");sc.src="https://accounts.google.com/gsi/client";sc.async=true;
+  sc.onload=function(){try{google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onG,auto_select:false,cancel_on_tap_outside:true});gReady=true;renderG()}catch(e){$("gNote").textContent="Google sign-in could not start."}};
+  sc.onerror=function(){$("gNote").textContent="Could not reach Google. Check your connection."};document.head.appendChild(sc)}
+function onG(r){api("POST","/auth/google",{credential:r&&r.credential}).then(function(j){
+  if(j.needsSetup){pendingG={setup:j.setup,email:j.email};setMode("gsetup");$("a-name").value=j.name||"";$("aS").textContent="Signed in as "+j.email+". Finish setting up your account."}else start(j.user)}).catch(function(e){aerr(e.message)})}
+function gFinish(name,ph){if(!pendingG)return aerr("Please start again with Google.");
+  if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck();if(se)return aerr(se);
+  work();api("POST","/auth/google/complete",shipFields({setup:pendingG.setup,name:name,phone:ph,role:role})).then(function(j){pendingG=null;start(j.user)}).catch(function(e){aerr(e.message)})}
+
+/* Slogans */
+var SLG=["Si lazima uende dukani","Hii ni ya wavivu"],si=0;
+function slg(){document.querySelectorAll("[data-slg]").forEach(function(e){e.textContent=SLG[si]})}
+function tick(){var a=document.querySelectorAll("[data-slg]");a.forEach(function(e){e.classList.add("off")});setTimeout(function(){si=(si+1)%SLG.length;slg();a.forEach(function(e){e.classList.remove("off")})},400)}
+
+/* Profile */
+function fillProfile(){$("p-role").value=me.role==="admin"?"Administrator":me.role==="shipper"?"Shipper · "+me.veh+" · "+me.area+" · "+({approved:"Verified",pending:"Under review",rejected:"Needs changes",draft:"ID needed"}[me.status]||""):"Sender";
+  var lk=me.role==="shipper"&&(me.status==="pending"||me.status==="approved");$("p-name").readOnly=lk;$("p-lock").style.display=lk?"block":"none";$("p-name").value=me.name;$("p-phone").value=me.phone;$("p-email").value=me.email;$("pErr").textContent=""}
+$("pSave").addEventListener("click",function(){var n=$("p-name").value.trim(),p=$("p-phone").value.trim();
+  if(n.length<2){$("pErr").textContent="Enter your full name.";return}if(!phoneOk(p)){$("pErr").textContent="Enter a valid phone number.";return}
+  api("PATCH","/me",{name:n,phone:p}).then(function(j){me=j.user;$("pErr").textContent="";toast("Profile saved")}).catch(function(e){$("pErr").textContent=e.message})});
+
+/* Shipper identity verification: details + ID photos, then an admin decides */
+var DOCS={front:"ID photo: front",back:"ID photo: back",selfie:"Selfie holding your ID"};
+function renderVerify(){var st=me.status,edit=st==="draft"||st==="rejected";
+  var T={draft:["Verify your identity","Add your ID details and photos. An admin reviews them before you can see jobs."],pending:["Under review","Thanks! An admin is checking your ID. We will email you as soon as it is decided."],rejected:["Changes needed",""]}[st]||["Verify your identity",""];
+  $("vT").textContent=T[0];$("vS").textContent=st==="rejected"?"Reason: "+(me.rejectReason||"not given")+". Fix it below and submit again.":T[1];
+  $("vForm").style.display=edit?"block":"none";$("vWait").style.display=edit?"none":"block";
+  if(edit){$("v-idt").value=me.idType||ID_TYPES[0];$("v-idn").value=me.idNumber||"";$("v-dob").value=me.dob||"";$("v-addr").value=me.address||"";$("vErr").textContent="";renderDocs()}}
+function renderDocs(){var box=$("v-docs");box.textContent="";
+  (($("v-idt").value==="Passport")?["front","selfie"]:["front","back","selfie"]).forEach(function(k){
+    var has=me.docs.indexOf(k)>-1,d=el("div","doc"+(has?" ok":"")),h=el("div","h"),inp=document.createElement("input"),b=el("button","btn sec",has?"Replace photo":"Choose photo");
+    h.appendChild(el("span",null,DOCS[k]));if(has)h.appendChild(el("small",null,"✓ Uploaded"));d.appendChild(h);
+    if(has){var im=el("img","docimg");im.alt=DOCS[k];im.src="/api/me/id-docs/"+k+"?v="+(docVer[k]||0);im.onclick=function(){im.classList.toggle("big")};d.appendChild(im)}
+    inp.type="file";inp.accept="image/*";if(k==="selfie")inp.setAttribute("capture","user");
+    b.type="button";b.onclick=function(){inp.click()};inp.onchange=function(){var f=inp.files&&inp.files[0];if(f)uploadDoc(k,f)};
+    d.appendChild(b);d.appendChild(inp);box.appendChild(d)})}
+/* shrink and re-encode as JPEG in the browser: faster upload on mobile data, and one predictable format for the server to check */
+function prep(file){return new Promise(function(res,rej){var fr=new FileReader();
+  fr.onerror=function(){rej(new Error("Could not read that file."))};
+  fr.onload=function(){var im=new Image();im.onerror=function(){rej(new Error("That file is not a photo we can read."))};
+    im.onload=function(){var s=Math.min(1,1600/Math.max(im.width,im.height)),c=document.createElement("canvas");c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);
+      c.getContext("2d").drawImage(im,0,0,c.width,c.height);c.toBlob(function(b){b?res(b):rej(new Error("Could not process that photo."))},"image/jpeg",.85)};
+    im.src=fr.result};fr.readAsDataURL(file)})}
+function uploadDoc(k,f){if(busy)return;busy=true;$("vErr").textContent="";toast("Uploading…");
+  prep(f).then(function(blob){return fetch("/api/me/id-docs/"+k,{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"image/jpeg"},body:blob})})
+  .then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw new Error(j.error||"Upload failed.");return j})})
+  .then(function(j){me.docs=j.docs;docVer[k]=Date.now();busy=false;renderDocs();toast("Photo saved")})
+  .catch(function(e){busy=false;renderDocs();$("vErr").textContent=e.message})}
+$("v-idt").addEventListener("change",renderDocs);
+$("vSubmit").addEventListener("click",function(){if(busy)return;var b=$("vSubmit");busy=true;b.disabled=true;$("vErr").textContent="";
+  api("POST","/me/verification",{idType:$("v-idt").value,idNumber:$("v-idn").value.trim(),dob:$("v-dob").value,address:$("v-addr").value.trim()})
+  .then(function(j){me=j.user;busy=false;b.disabled=false;navFor(me);toast("Submitted. We will email you the decision.");renderVerify()})
+  .catch(function(e){busy=false;b.disabled=false;$("vErr").textContent=e.message})});
+
+/* Admin: review shippers */
+$("aTabs").addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;adminTab=b.dataset.t;
+  document.querySelectorAll("#aTabs button").forEach(function(x){x.classList.toggle("on",x===b)});renderAdmin()});
+function ageOf(d){var b=new Date(d+"T00:00:00Z"),n=new Date(),a=n.getUTCFullYear()-b.getUTCFullYear();if(n.getUTCMonth()<b.getUTCMonth()||(n.getUTCMonth()===b.getUTCMonth()&&n.getUTCDate()<b.getUTCDate()))a--;return a}
+function decideShipper(s,act,reason,btn){btn.disabled=true;
+  api("POST","/admin/shippers/"+s.id+"/"+act,reason?{reason:reason}:{}).then(function(){toast(s.name+(act==="approve"?" approved":" rejected"))},function(e){toast(e.message)}).then(function(){renderAdmin()})}
+function shipperCard(s){var c=el("div","card"),top=el("div"),l=el("div");top.style.cssText="display:flex;justify-content:space-between;align-items:center;gap:8px";
+  l.appendChild(el("b",null,s.name));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,s.email));top.appendChild(l);
+  top.appendChild(el("span",s.status==="approved"?"pill d":s.status==="rejected"?"pill p":"pill",s.status));c.appendChild(top);
+  var R=[["Phone",s.phone],["Vehicle",s.veh+" · base "+s.area],["ID",s.idType+" · "+s.idNumber],["Born",s.dob+" (age "+ageOf(s.dob)+")"],["Address",s.address],["Applied",new Date(s.at).toLocaleString()]];
+  if(s.reason)R.push(["Reason",s.reason]);
+  R.forEach(function(r){var p=el("div","kv");p.appendChild(el("b",null,r[0]+": "));p.appendChild(document.createTextNode(r[1]));c.appendChild(p)});
+  ["front","back","selfie"].forEach(function(k){if(s.docs.indexOf(k)<0)return;var t=el("div","kv",DOCS[k]);t.style.marginTop="10px";c.appendChild(t);
+    var im=el("img","docimg");im.alt=DOCS[k];im.src="/api/admin/shippers/"+s.id+"/docs/"+k;im.onclick=function(){im.classList.toggle("big")};c.appendChild(im)});
+  if(s.status!=="approved"){var ap=el("button","btn ok","Approve");ap.onclick=function(){decideShipper(s,"approve",null,ap)};c.appendChild(ap)}
+  if(s.status!=="rejected"){var rj=el("button","btn sec dng","Reject…"),w=el("div"),inp=el("input"),cf=el("button","btn sec dng","Confirm reject");
+    w.style.display="none";inp.maxLength=200;inp.placeholder="Reason the shipper will see (e.g. photo is blurry)";inp.style.marginTop="8px";inp.setAttribute("aria-label","Rejection reason");w.appendChild(inp);w.appendChild(cf);
+    rj.onclick=function(){w.style.display=w.style.display==="none"?"block":"none";if(w.style.display==="block")inp.focus()};
+    cf.onclick=function(){if(inp.value.trim().length<3){toast("Give the shipper a reason (at least 3 characters).");return}decideShipper(s,"reject",inp.value.trim(),cf)};
+    c.appendChild(rj);c.appendChild(w)}
+  return c}
+function renderAdmin(auto){var box=$("alist");
+  if(auto&&(box.contains(document.activeElement)||box.querySelector(".docimg.big")))return; /* do not disturb a review in progress */
+  return api("GET","/admin/shippers?status="+adminTab).then(function(j){
+    document.querySelectorAll("#aTabs button").forEach(function(b){b.textContent=b.dataset.t.charAt(0).toUpperCase()+b.dataset.t.slice(1)+" ("+j.counts[b.dataset.t]+")"});
+    box.textContent="";if(!j.shippers.length){box.appendChild(el("div","card empty","Nobody here right now."));return}
+    j.shippers.forEach(function(s){box.appendChild(shipperCard(s))})},function(e){toast(e.message)})}
+
+/* Admin: shops and price lists */
+function numIn(v){var n=Math.round(Number(v));return isFinite(n)?n:NaN}
+function shopCall(method,path,body,done){return api(method,path,body).then(function(){if(done)done()},function(e){toast(e.message)}).then(renderShops)}
+function lbl(t,id){var l=el("label",null,t);if(id)l.htmlFor=id;return l}
+function itemEditor(sh,it){var d=el("div","ied"),r=el("div","row"),nm=el("input"),un=el("input"),pr=el("input"),r2=el("div","row"),bt=el("div","btns");
+  nm.value=it?it.name:"";nm.maxLength=60;nm.placeholder="Item (e.g. Sugar)";nm.setAttribute("aria-label","Item name");
+  un.value=it?it.unit:"";un.maxLength=20;un.placeholder="Unit (e.g. 1 kg)";un.setAttribute("aria-label","Unit");
+  pr.type="number";pr.inputMode="numeric";pr.min="1";pr.value=it?it.price:"";pr.placeholder="Price KES";pr.setAttribute("aria-label","Price in shillings");
+  r.style.gridTemplateColumns="1fr";r.appendChild(nm);d.appendChild(r);r2.appendChild(un);r2.appendChild(pr);d.appendChild(r2);
+  function body(){var p=numIn(pr.value);if(nm.value.trim().length<2||!un.value.trim()||!(p>0)){toast("Fill in the item, unit and a price.");return null}return{name:nm.value.trim(),unit:un.value.trim(),price:p}}
+  if(it){var sv=el("button","btn sec","Save"),hd=el("button","btn sec",it.active?"Hide":"Show"),rm=el("button","btn sec dng","Delete"),armed=false;
+    sv.onclick=function(){var b=body();if(b)shopCall("PATCH","/admin/items/"+it.id,b,function(){toast("Saved")})};
+    hd.onclick=function(){shopCall("PATCH","/admin/items/"+it.id,{active:!it.active})};
+    rm.onclick=function(){if(!armed){armed=true;rm.textContent="Tap again";setTimeout(function(){armed=false;rm.textContent="Delete"},3000);return}shopCall("DELETE","/admin/items/"+it.id)};
+    bt.style.gridTemplateColumns="repeat(3,1fr)";bt.appendChild(sv);bt.appendChild(hd);bt.appendChild(rm);if(!it.active)nm.style.opacity=".55"}
+  else{var ad=el("button","btn","Add item");ad.style.marginTop="6px";ad.onclick=function(){var b=body();if(b)shopCall("POST","/admin/shops/"+sh.id+"/items",b,function(){toast("Item added")})};bt.style.gridTemplateColumns="1fr";bt.appendChild(ad)}
+  d.appendChild(bt);return d}
+function adminShopCard(sh){var c=el("div","card"),top=el("div"),l=el("div"),open=!!shopOpen[sh.id];top.style.cssText="display:flex;justify-content:space-between;align-items:center;gap:8px";
+  l.appendChild(el("b",null,sh.name));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,sh.area+" · "+sh.items.length+" goods"));top.appendChild(l);
+  var tg=el("div");tg.style.cssText="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end";tg.appendChild(el("span",sh.rec?"tag":"tag off",sh.rec?"⭐ Recommended":"Not recommended"));if(!sh.active)tg.appendChild(el("span","tag off","Hidden"));top.appendChild(tg);c.appendChild(top);
+  var m=el("div","mini"),a=el("button","btn sec",sh.rec?"Unrecommend":"Recommend"),h=el("button","btn sec",sh.active?"Hide shop":"Show shop"),x=el("button","btn sec dng","Delete"),armed=false;
+  a.onclick=function(){shopCall("PATCH","/admin/shops/"+sh.id,{rec:!sh.rec})};h.onclick=function(){shopCall("PATCH","/admin/shops/"+sh.id,{active:!sh.active})};
+  x.onclick=function(){if(!armed){armed=true;x.textContent="Tap again";setTimeout(function(){armed=false;x.textContent="Delete"},3000);return}shopCall("DELETE","/admin/shops/"+sh.id,null,function(){toast("Shop deleted")})};
+  m.appendChild(a);m.appendChild(h);m.appendChild(x);c.appendChild(m);
+  var t=el("button","btn sec",open?"Hide goods ▲":"Goods & prices ▼");t.onclick=function(){shopOpen[sh.id]=!open;drawShops()};c.appendChild(t);
+  if(open){sh.items.forEach(function(it){c.appendChild(itemEditor(sh,it))});var nb=el("b",null,"Add a good");nb.style.cssText="display:block;margin-top:12px;font-size:13px";c.appendChild(nb);c.appendChild(itemEditor(sh,null))}
+  return c}
+function drawShops(){var box=$("slist"),f=$("sf").value,list=adminShops.filter(function(s){return f==="all"||s.area===f});box.textContent="";
+  if(!list.length){box.appendChild(el("div","card empty","No shops here yet. Add one above."));return}list.forEach(function(s){box.appendChild(adminShopCard(s))})}
+function renderShops(){return api("GET","/admin/shops").then(function(j){adminShops=j.shops;drawShops()},function(e){toast(e.message)})}
+$("sf").addEventListener("change",drawShops);
+$("ns-add").addEventListener("click",function(){var n=$("ns-name").value.trim();$("nsErr").textContent="";if(n.length<2){$("nsErr").textContent="Enter the shop name.";return}
+  api("POST","/admin/shops",{area:$("ns-area").value,name:n}).then(function(j){$("ns-name").value="";shopOpen[j.id]=true;toast("Shop added. Now add its goods.");$("sf").value="all";return renderShops()}).catch(function(e){$("nsErr").textContent=e.message})});
+
+/* Request form (senders) */
+/* Recommended shops (from the admin's catalog) come first in each area, then the sender's own saved shops, then "Other" */
+function curShop(){var v=$("shopSel").value;if(v.indexOf("c:")!==0)return null;var id=+v.slice(2);return catalog.filter(function(x){return x.id===id})[0]||null}
+function loadCatalog(){return api("GET","/shops").then(function(j){if(JSON.stringify(j)!==JSON.stringify(catalog)){catalog=j;fillShops()}},function(){})}
+function fillShops(){var a=$("from").value,s=$("shopSel"),keep=s.value;s.textContent="";
+  catalog.filter(function(x){return x.area===a}).forEach(function(x){s.add(new Option((x.rec?"⭐ ":"")+x.name,"c:"+x.id))});
+  myShops.filter(function(x){return x.a===a}).forEach(function(x){s.add(new Option(x.n,"m:"+x.n))});
+  s.add(new Option("✏️ Other: type a shop name",OTHER));
+  if(keep&&Array.prototype.some.call(s.options,function(o){return o.value===keep}))s.value=keep;shopToggle()}
+function shopToggle(){$("otherWrap").style.display=$("shopSel").value===OTHER?"block":"none";renderGoods()}
+function cartCount(){var n=0;for(var k in cart)n+=cart[k];return n}
+function cartLines(){var cs=curShop(),o=[];if(!cs)return o;cs.items.forEach(function(i){if(cart[i.id])o.push({id:i.id,q:cart[i.id]})});return o}
+function goodsSum(){var cs=curShop(),t=0;if(cs)cs.items.forEach(function(i){t+=i.price*(cart[i.id]||0)});return t}
+function renderGoods(){var cs=curShop(),box=$("goods");if((cs?cs.id:null)!==cartShop){cart={};cartShop=cs?cs.id:null}
+  box.textContent="";$("goodsCard").style.display=cs&&cs.items.length?"block":"none";
+  $("l-it").textContent=cs&&cs.items.length?"Other items not on the list (optional)":"Item name";
+  $("payNote").textContent=cs&&cs.items.length?"💵 Pay on delivery. Goods are priced per unit and added to the delivery fee. Anything you type in yourself is not priced yet.":"💵 Pay on delivery. Item cost is not included: this is the delivery fee only.";
+  if(cs)cs.items.forEach(function(i){var row=el("div","gi"+(cart[i.id]?" on":"")),t=el("div","gt"),q=el("div","qty"),m=el("button",null,"−"),n=el("span",null,String(cart[i.id]||0)),p=el("button",null,"+");
+    t.appendChild(el("b",null,i.name));t.appendChild(el("small",null,i.unit+" · "+fmt(i.price)));m.type="button";p.type="button";m.setAttribute("aria-label","Less "+i.name);p.setAttribute("aria-label","More "+i.name);
+    function set(v){v=Math.max(0,Math.min(50,v));if(v)cart[i.id]=v;else delete cart[i.id];n.textContent=String(v);row.classList.toggle("on",v>0);m.disabled=!v;showTotal()}
+    m.disabled=!cart[i.id];m.onclick=function(){set((cart[i.id]||0)-1)};p.onclick=function(){set((cart[i.id]||0)+1)};
+    q.appendChild(m);q.appendChild(n);q.appendChild(p);row.appendChild(t);row.appendChild(q);box.appendChild(row)});
+  showTotal()}
+function showTotal(){if(!lastQ)return;var g=goodsSum(),typed=$("it").value.trim().length>1,cs=curShop();countTo(lastQ.total+g);
+  $("sumLine").textContent=cs&&cs.items.length?"Delivery "+fmt(lastQ.total)+" + Goods "+fmt(g)+(typed?" + typed items (not priced)":""):"Delivery fee only";}
+$("it").addEventListener("input",showTotal);
+function fill(){var f=$("from"),t=$("to"),j=$("jf"),aa=$("a-area");order().forEach(function(c){f.add(new Option(c,c));t.add(new Option(c,c));j.add(new Option(c,c));aa.add(new Option(c,c));$("ns-area").add(new Option(c,c));$("sf").add(new Option(c,c))});
+  j.add(new Option("All areas","all"),0);j.value="all";$("sf").add(new Option("All areas","all"),0);$("sf").value="all";f.value="Mombasa";t.value="Diani";
+  WT.forEach(function(w,i){$("wt").add(new Option(w.l,i))});VEHICLES.forEach(function(v){$("a-veh").add(new Option(v,v))});ID_TYPES.forEach(function(v){$("a-idt").add(new Option(v,v));$("v-idt").add(new Option(v,v))});fillShops()}
+var lastTotal=0;
+function countTo(n){var e=$("total"),s=lastTotal,st=performance.now();lastTotal=n;(function step(t){var p=Math.min(1,(t-st)/450);e.textContent=fmt(Math.round(s+(n-s)*p));if(p<1)requestAnimationFrame(step)})(st)}
+function updatePrice(){var f=$("from").value,t=$("to").value,q=quote(f,t,+$("wt").value,speed);
+  lastQ=q;showTotal();$("dist").textContent=f===t?"Within "+f:"≈ "+q.d+" km · "+f+" → "+t;
+  var sum=q.route+q.wf+q.ex+q.ferry;[["b1",q.route],["b2",q.wf],["b3",q.ex],["b4",q.ferry]].forEach(function(r){$(r[0]).style.width=(r[1]/sum*100)+"%"});
+  $("l1").textContent=q.route;$("l2").textContent=q.wf;$("l3").textContent=q.ex;$("l4").textContent=q.ferry;drawMap($("formMap"),f,t)}
+$("from").addEventListener("change",function(){fillShops();updatePrice()});
+["to","wt"].forEach(function(i){$(i).addEventListener("change",updatePrice)});
+$("shopSel").addEventListener("change",shopToggle);
+$("spd").addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;speed=b.dataset.s;
+  document.querySelectorAll("#spd button").forEach(function(x){x.classList.toggle("on",x===b)});updatePrice()});
+$("submit").addEventListener("click",function(){
+  if(!me||me.role!=="sender"||busy)return;
+  var ids=["shopOther","drop","it","rn","rp"],bad=[],other=$("shopSel").value===OTHER;ids.forEach(function(k){$(k).classList.remove("bad")});
+  if(other&&$("shopOther").value.trim().length<2)bad.push("shopOther");
+  ["drop","rn"].forEach(function(k){if($(k).value.trim().length<2)bad.push(k)});
+  if(!cartCount()&&$("it").value.trim().length<2)bad.push("it");
+  if(!phoneOk($("rp").value))bad.push("rp");
+  if(bad.length){bad.forEach(function(k){$(k).classList.add("bad")});$("err").textContent="Please complete the highlighted fields. Phone looks like 0712 345 678.";$(bad[0]).focus();return}
+  $("err").textContent="";
+  var from=$("from").value,cs=curShop(),sv=$("shopSel").value,shop=other?$("shopOther").value.trim():cs?cs.name:sv.slice(2),btn=$("submit");busy=true;btn.disabled=true;
+  api("POST","/deliveries",{from:from,to:$("to").value,shop:shop,shopId:cs?cs.id:undefined,items:cs&&cartCount()?cartLines():undefined,custom:other,land:$("land").value.trim(),drop:$("drop").value.trim(),pp:pins.pick,dp:pins.drop,it:$("it").value.trim(),w:+$("wt").value,s:speed,rn:$("rn").value.trim(),rp:$("rp").value.trim()})
+  .then(function(d){busy=false;btn.disabled=false;
+    if(other&&!myShops.some(function(x){return x.a===from&&x.n.toLowerCase()===shop.toLowerCase()}))myShops.push({a:from,n:shop});
+    ["shopOther","land","drop","it","rn","rp"].forEach(function(k){$(k).value=""});cart={};cartShop=null;fillShops();initPins();
+    toast("Request sent! ID "+d.id);go("hist");renderList(false,d.id)})
+  .catch(function(e){busy=false;btn.disabled=false;$("err").textContent=e.message})});
+
+function pillCls(s){return "pill"+(s===2?" d":s===0?" p":"")}
+function copyBtn(id){var b=el("button","btn sec","Copy tracking ID");b.addEventListener("click",function(e){e.stopPropagation();try{navigator.clipboard.writeText(id).then(function(){toast("Copied "+id)},function(){toast(id)})}catch(er){toast(id)}});return b}
+function card(x,open,ctx){ /* ctx: s = sender, j = shipper job board, m = shipper's own jobs */
+  var c=el("div","card item"+(open?" open":"")),top=el("div","top"),l=el("div");
+  l.appendChild(el("b",null,x.from+" → "+x.to));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,x.id+" · "+x.shop));
+  top.appendChild(l);top.appendChild(el("span",pillCls(x.step),STEPS[x.step]));c.appendChild(top);
+  var dt=el("div","detail"),svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 320 210");svg.setAttribute("width","100%");dt.appendChild(svg);
+  var ul=el("ul","tl");STEPS.forEach(function(s,i){var li=el("li",i<=x.step?"done":"");li.appendChild(el("i",null,i<=x.step?"✓":""));li.appendChild(document.createTextNode(s));ul.appendChild(li)});dt.appendChild(ul);
+  var R=[["Pickup",x.shop+", "+x.from+(x.land?" ("+x.land+")":"")],["Drop-off",x.drop?x.drop+", "+x.to:x.to+" (exact spot shown after you accept)"],["Item",(x.items&&x.items.length?"":x.it+" · ")+WT[x.w].l+" · "+(x.s==="express"?"Express":"Standard")]];
+  if(ctx==="s")R.splice(2,0,["Recipient",x.rn+" · "+x.rp],["Shipper",x.shipper?x.shipperName+" · "+x.shipperPhone+" ("+x.veh+")":"Waiting for a shipper"]);
+  if(ctx==="m")R.splice(2,0,["Recipient",x.rn+" · "+x.rp],["Sender",x.sn+" · "+x.sp]);
+  (x.items||[]).forEach(function(l){R.push([l.q+" × "+l.n+(l.u?" ("+l.u+")":""),fmt(l.p*l.q)])});
+  if(x.custom&&x.items&&x.items.length)R.push(["Other items (not priced)",x.custom]);
+  R.push(["Delivery fee",fmt(x.price)]);if(x.goods)R.push(["Goods",fmt(x.goods)]);R.push([ctx==="s"?"Total (pay on delivery)":"Total",fmt(x.price+x.goods)]);
+  R.forEach(function(r){var p=el("div");p.style.cssText="font-size:13px;margin:3px 0";var b=el("b",null,r[0]+": ");b.style.fontSize="13px";p.appendChild(b);p.appendChild(document.createTextNode(r[1]));dt.appendChild(p)});
+  if(x.pp)dt.appendChild(pinChip(x.pp,"Pickup pin",ctx!=="s"));if(x.dp)dt.appendChild(pinChip(x.dp,"Drop-off pin",ctx!=="s"));
+  if(ctx==="j"){var a=el("button","btn","Accept job");a.addEventListener("click",function(e){e.stopPropagation();a.disabled=true;
+    api("POST","/jobs/"+encodeURIComponent(x.id)+"/accept").then(function(){toast("Job accepted. See My jobs.")},function(er){toast(er.message)}).then(renderJobs)});dt.appendChild(a)}
+  if(ctx==="m"){var f=el("button","btn",x.step===1?"Mark as delivered":"Delivered ✓");f.disabled=x.step!==1;f.addEventListener("click",function(e){e.stopPropagation();f.disabled=true;
+    api("POST","/jobs/"+encodeURIComponent(x.id)+"/deliver").then(function(){toast("Marked delivered")},function(er){toast(er.message)}).then(function(){renderMine(x.id)})});dt.appendChild(f)}
+  dt.appendChild(copyBtn(x.id));
+  if(ctx==="s"&&x.step===0){var b3=el("button","btn sec dng","Cancel request"),armed=false;b3.addEventListener("click",function(e){e.stopPropagation();
+    if(!armed){armed=true;b3.textContent="Tap again to cancel "+x.id;setTimeout(function(){armed=false;b3.textContent="Cancel request"},4000);return}
+    b3.disabled=true;api("DELETE","/deliveries/"+encodeURIComponent(x.id)).then(function(){toast("Request cancelled")},function(er){toast(er.message)}).then(function(){renderList(false)})});dt.appendChild(b3)}
+  c.dataset.id=x.id;c.appendChild(dt);
+  c.addEventListener("click",function(){c.classList.toggle("open");if(c.classList.contains("open"))drawMap(svg,x.from,x.to)});
+  if(open)drawMap(svg,x.from,x.to);return c}
+
+function fillBox(box,arr,ctx,msg,openId){var keep={};box.querySelectorAll(".item.open").forEach(function(n){keep[n.dataset.id]=1});box.textContent="";
+  if(!arr.length){box.appendChild(el("div","card empty",msg));return}arr.forEach(function(x){box.appendChild(card(x,x.id===openId||!!keep[x.id],ctx))})}
+function drawList(openId){var term=$("q").value.trim().toUpperCase();
+  var d=cache.mine.filter(function(x){return !term||x.id.indexOf(term)>-1});
+  fillBox($("list"),d,"s",term?"No delivery matches that ID.":"No deliveries yet. Tap Request to create one.",openId||(term&&d.length===1?d[0].id:""))}
+var rlSeq=0;
+function renderList(reset,openId){var q=$("q");if(reset&&!openId)q.value="";var n=++rlSeq;
+  return api("GET","/deliveries").then(function(d){if(n!==rlSeq)return;cache.mine=d;drawList(openId)},function(e){toast(e.message)})}
+$("q").addEventListener("input",function(){drawList()});
+function renderJobs(){var a=$("jf").value;return api("GET","/jobs?area="+encodeURIComponent(a)).then(function(d){cache.jobs=d;fillBox($("jlist"),d,"j","No open jobs right now. Check again soon.")},jerr)}
+$("jf").addEventListener("change",renderJobs);
+function renderMine(openId){return api("GET","/jobs/mine").then(function(d){cache.jm=d;fillBox($("mlist"),d,"m","You have no jobs yet. Accept one from Jobs.",openId)},jerr)}
+function jerr(e){if(e.status===403)refreshMe();else toast(e.message)}
+function bump(id,n){var e=$(id),s=+e.textContent,st=performance.now();(function step(t){var p=Math.min(1,(t-st)/500);e.textContent=Math.round(s+(n-s)*p);if(p<1)requestAnimationFrame(step)})(st)}
+function renderHome(){return api("GET","/deliveries").then(function(d){cache.mine=d;
+  bump("s1",d.length);bump("s2",d.filter(function(x){return x.step<2}).length);bump("s3",d.filter(function(x){return x.step===2}).length);
+  var r=$("recent");r.textContent="";
+  if(!d.length){r.appendChild(el("div","empty","Your deliveries will show up here."));return}
+  d.slice(0,3).forEach(function(x){var row=el("div","item");row.style.padding="10px 0";var t=el("div","top"),l=el("div");
+    l.appendChild(el("b",null,x.from+" → "+x.to));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,x.id+" · "+x.shop));
+    t.appendChild(l);t.appendChild(el("span",pillCls(x.step),STEPS[x.step]));row.appendChild(t);
+    row.addEventListener("click",function(){go("hist");renderList(false,x.id)});r.appendChild(row)})},function(e){toast(e.message)})}
+
+/* Live refresh so shared jobs and status changes show up without reloading */
+setInterval(function(){if(!me||document.hidden||busy)return;var v=document.querySelector(".view.on");if(!v)return;
+  if(v.id==="v-hist")renderList(false);else if(v.id==="v-jobs")renderJobs();else if(v.id==="v-mine")renderMine();else if(v.id==="v-home")renderHome();else if(v.id==="v-verify")refreshMe();else if(v.id==="v-admin")renderAdmin(true)},15000);
+
+/* Boot */
+function init(){document.querySelector("header small").textContent=order().join(" \u00b7 ");fill();drawMap($("homeMap"));drawMap($("authMap"));setMode("login");slg();setInterval(tick,3600);loadG();
+  api("GET","/me").then(function(j){start(j.user,j.shops)},function(){show("auth")})}
+fetch("/api/config",{credentials:"same-origin"}).then(function(r){return r.json()}).then(function(c){
+  AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
+  .catch(function(){document.querySelector(".wrap").prepend(el("div","card empty","Cannot reach the SMD server. Please refresh."))});
+})();
