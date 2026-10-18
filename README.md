@@ -1,7 +1,7 @@
 # Send Me Deliveries (SMD)
 
 Multi-user delivery app: real accounts, server-side auth, and jobs shared between senders and shippers.
-Node + Express + SQLite (built-in `node:sqlite`, no native modules). The UI is your original design.
+Node + Express + SQLite-compatible database: Turso (libSQL) in production, a local file in development. The UI is your original design.
 
 ## Run it
 
@@ -9,7 +9,7 @@ Node + Express + SQLite (built-in `node:sqlite`, no native modules). The UI is y
     npm start            # http://localhost:3000
     npm test             # 160 end-to-end checks against a throw-away database
 
-Requires Node 22.13 or newer. `npm start` automatically reads a `.env` file in this folder if one exists (copy `.env.example` to `.env` and fill it in). Data lives in `smd.db` (set `DB_PATH` to move it). Back that file up.
+Requires Node 22.13 or newer. `npm start` automatically reads a `.env` file in this folder if one exists (copy `.env.example` to `.env` and fill it in). Without Turso settings, data lives in the local file `smd.db` (set `DB_PATH` to move it); back that file up. In production use Turso (below): the data then lives outside your server and survives every deploy.
 
 ## Configuration (environment variables)
 
@@ -26,7 +26,8 @@ Requires Node 22.13 or newer. `npm start` automatically reads a `.env` file in t
 | `API_RATE_LIMIT`, `UPLOAD_RATE_LIMIT` | API requests per IP per minute (default 300) and ID-photo uploads per IP per minute (default 30). |
 
 With no mail provider configured, codes are printed to the server console **in development only**. In production nobody can verify an email until SMTP or the webhook is set.
-| `DB_PATH` | SQLite file location. |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | **Production database.** `libsql://your-db-your-org.turso.io` and a database token. When set, the app uses Turso and ignores `DB_PATH`. |
+| `DB_PATH` | Local SQLite file (development and tests only; used when `TURSO_DATABASE_URL` is not set). |
 | `AUTH_RATE_LIMIT` | Auth requests per IP per minute (default 20). |
 
 Serve it over HTTPS (Caddy/nginx/your host). Cookies are `Secure` in production and will not work over plain HTTP.
@@ -78,3 +79,11 @@ Serve it over HTTPS (Caddy/nginx/your host). Cookies are `Secure` in production 
 Areas are defined in `config.js`. `pos` is the distance in km from Mombasa: it sets the price **and** the order of stops on the
 map, in the dropdowns and in the header (currently Mombasa, Likoni, Kombani, Tiwi, Ukunda, Diani). Routes on the map pass through every stop in between.
 To reorder or add an area, change `pos` and the `x,y` map position, then restart the server.
+
+## Database: Turso (free tier) for hosting on Render
+
+Render's free disk is wiped on every deploy, so the database lives on Turso instead. The app creates all tables and the sample shops itself on first start.
+1. Create a free account and a database at turso.tech (pick a region close to your Render region).
+2. Copy the database URL (`libsql://...`) and create a database token (read and write).
+3. In Render > Environment add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, then save (Render redeploys).
+Everything stays the same for local work: with no Turso variables, `npm start` and `npm test` use a local file. Every database call is asynchronous (`await q(sql).get/all/run`).
