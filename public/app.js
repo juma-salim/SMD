@@ -101,7 +101,7 @@ function setMode(m){mode=m;$("aErr").textContent="";
   $("aT").textContent=T[0];$("aS").textContent=T[1];$("aBtn").textContent=T[2];$("aSw").textContent=T[3];
   var gs=m==="gsetup",sg=m==="signup"||gs;$("g-role").style.display=sg?"block":"none";$("g-name").style.display=sg?"block":"none";$("g-phone").style.display=sg?"block":"none";
   $("g-cred").style.display=gs?"none":"block";var vf=m==="verify";$("g-code").style.display=(m==="reset"||vf)?"block":"none";$("l-code").textContent=vf?"Verification code":"Reset code";$("a-code").maxLength=vf?6:12;$("a-code").inputMode=vf?"numeric":"text";$("a-email").readOnly=vf;
-  var nopw=m==="forgot"||vf;$("a-pw").style.display=nopw?"none":"block";$("l-pw").style.display=nopw?"none":"block";
+  var nopw=m==="forgot"||vf;$("a-pw").parentNode.style.display=nopw?"none":"block";var pwi=$("a-pw");pwi.type="password";$("l-pw").style.display=nopw?"none":"block";
   $("g-google").style.display=(m==="login"||m==="signup")?"block":"none";
   $("l-pw").textContent=m==="reset"?"New password":"Password";$("a-pw").autocomplete=m==="login"?"current-password":"new-password";
   $("aFg").style.display=(m==="login"||vf)?"inline":"none";$("aFg").textContent=vf?"Resend code":"Forgot password?";setRole(role);renderG()}
@@ -336,8 +336,11 @@ function card(x,open,ctx){ /* ctx: s = sender, j = shipper job board, m = shippe
   if(x.pp)dt.appendChild(pinChip(x.pp,"Pickup pin",ctx!=="s"));if(x.dp)dt.appendChild(pinChip(x.dp,"Drop-off pin",ctx!=="s"));
   if(ctx==="j"){var a=el("button","btn","Accept job");a.addEventListener("click",function(e){e.stopPropagation();a.disabled=true;
     api("POST","/jobs/"+encodeURIComponent(x.id)+"/accept").then(function(){toast("Job accepted. See My jobs.")},function(er){toast(er.message)}).then(renderJobs)});dt.appendChild(a)}
-  if(ctx==="m"){var f=el("button","btn",x.step===1?"Mark as delivered":"Delivered ✓");f.disabled=x.step!==1;f.addEventListener("click",function(e){e.stopPropagation();f.disabled=true;
-    api("POST","/jobs/"+encodeURIComponent(x.id)+"/deliver").then(function(){toast("Marked delivered")},function(er){toast(er.message)}).then(function(){renderMine(x.id)})});dt.appendChild(f)}
+  if(ctx==="m"){var f=el("button","btn",x.step===2?"Completed ✓":x.shipOk?"Waiting for sender to confirm":"Mark as delivered");f.disabled=x.step!==1||x.shipOk;f.addEventListener("click",function(e){e.stopPropagation();f.disabled=true;
+    api("POST","/jobs/"+encodeURIComponent(x.id)+"/deliver").then(function(j){toast(j.done?"Delivery completed":"Signed off. Waiting for the sender to confirm.")},function(er){toast(er.message)}).then(function(){renderMine(x.id)})});dt.appendChild(f)}
+  if(ctx==="s"&&x.step===1){var g=el("button","btn",x.ownOk?"Waiting for shipper to sign off":"Confirm I received it");g.disabled=x.ownOk;g.addEventListener("click",function(e){e.stopPropagation();g.disabled=true;
+    api("POST","/deliveries/"+encodeURIComponent(x.id)+"/confirm").then(function(j){toast(j.done?"Delivery completed":"Confirmed. Waiting for the shipper to sign off.")},function(er){toast(er.message)}).then(function(){renderList(false,x.id)})});dt.appendChild(g)}
+  if(ctx==="s"&&x.step===1&&x.shipOk&&!x.ownOk)dt.appendChild(el("p","note","The shipper says this was delivered. Confirm once you or your recipient has it."));
   dt.appendChild(copyBtn(x.id));
   if(ctx==="s"&&x.step===0){var b3=el("button","btn sec dng","Cancel request"),armed=false;b3.addEventListener("click",function(e){e.stopPropagation();
     if(!armed){armed=true;b3.textContent="Tap again to cancel "+x.id;setTimeout(function(){armed=false;b3.textContent="Cancel request"},4000);return}
@@ -380,3 +383,12 @@ fetch("/api/config",{credentials:"same-origin"}).then(function(r){return r.json(
   AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
   .catch(function(){document.querySelector(".wrap").prepend(el("div","card empty","Cannot reach the SMD server. Please refresh."))});
 })();
+
+/* Show/hide password: small eye button on every password box */
+(function(){var i=document.getElementById("a-pw");if(!i||i.parentNode.classList.contains("pwbox"))return;
+  var w=document.createElement("div");w.className="pwbox";i.parentNode.insertBefore(w,i);w.appendChild(i);
+  var b=document.createElement("button");b.type="button";b.className="eye";b.setAttribute("aria-label","Show password");b.setAttribute("aria-pressed","false");
+  var ON='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+      OFF='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.9 10.9 0 0 1 12 19C5 19 1 12 1 12a19 19 0 0 1 5.1-5.9M9.9 5.1A10.4 10.4 0 0 1 12 5c7 0 11 7 11 7a19 19 0 0 1-2.2 3.2M1 1l22 22"/></svg>';
+  b.innerHTML=ON;w.appendChild(b);
+  b.addEventListener("click",function(){var show=i.type==="password";i.type=show?"text":"password";b.innerHTML=show?OFF:ON;b.setAttribute("aria-label",show?"Hide password":"Show password");b.setAttribute("aria-pressed",show?"true":"false");i.focus()})})();

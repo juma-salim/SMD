@@ -60,7 +60,7 @@ async function addCol(table, col, def) {
 async function migrate() {
   if (await addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE users SET email_verified=1");
   for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"]]) await addCol("users", c, d);
-  for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"]]) await addCol("deliveries", c, d);
+  for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"]]) await addCol("deliveries", c, d);
 }
 
 /* Sample shops and goods so the app is usable on day one. Seeded once only (flag kept in the meta table); the admin replaces them in the app (Shops tab). */
@@ -68,11 +68,15 @@ async function seedCatalog() {
   if (await q("SELECT v FROM meta WHERE k='seeded'").get()) return;
   const G = [["Sugar", "1 kg", 220], ["Maize flour (unga)", "2 kg", 190], ["Rice", "1 kg", 200], ["Cooking oil", "1 litre", 330], ["Milk", "500 ml", 65], ["Bread", "1 loaf", 70], ["Eggs", "1 tray (30)", 480]];
   const H = [["Paracetamol 500mg", "strip of 10", 40], ["Bandage roll", "1 roll", 60], ["Hand sanitiser", "100 ml", 150], ["ORS sachet", "1 sachet", 30]];
+  /* One transaction: either everything is seeded or nothing is. INSERT OR IGNORE + lookups make a repeat after a half-finished earlier run harmless. */
+  const now = Date.now(), stmts = [];
   for (const sh of C.SHOPS) {
-    const id = Number((await q("INSERT INTO catalog_shops(area,name,recommended,active,created) VALUES(?,?,1,1,?)").run(sh.a, sh.n, Date.now())).lastInsertRowid);
-    for (const [n, u, p] of /pharmacy/i.test(sh.n) ? H : G) await q("INSERT INTO catalog_items(shop_id,name,unit,price,active) VALUES(?,?,?,?,1)").run(id, n, u, p);
+    stmts.push({sql: "INSERT INTO catalog_shops(area,name,recommended,active,created) SELECT ?,?,1,1,? WHERE NOT EXISTS (SELECT 1 FROM catalog_shops WHERE area=? AND name=? COLLATE NOCASE)", args: [sh.a, sh.n, now, sh.a, sh.n]});
+    for (const [n, u, p] of /pharmacy/i.test(sh.n) ? H : G)
+      stmts.push({sql: "INSERT INTO catalog_items(shop_id,name,unit,price,active) SELECT id,?,?,?,1 FROM catalog_shops WHERE area=? AND name=? COLLATE NOCASE AND NOT EXISTS (SELECT 1 FROM catalog_items i WHERE i.shop_id=catalog_shops.id AND i.name=?)", args: [n, u, p, sh.a, sh.n, n]});
   }
-  await q("INSERT OR IGNORE INTO meta(k,v) VALUES('seeded','1')").run();
+  stmts.push({sql: "INSERT INTO meta(k,v) SELECT 'seeded','1' WHERE NOT EXISTS (SELECT 1 FROM meta WHERE k='seeded')", args: []});
+  await db.batch(stmts, "write");
 }
 
 /* Admins are the verified accounts whose email is listed in ADMIN_EMAIL (comma-separated). Nobody can become admin from inside the app. */
@@ -167,7 +171,7 @@ const approved = (req, res, next) => (req.user.status === "approved" ? next() : 
 /* ---------- Delivery mapping (field names match the original UI) ---------- */
 const pin = (s) => (s ? JSON.parse(s) : null);
 function mapD(d, view) { /* view: s = sender (owner), j = open job board, m = shipper's own job */
-  const o = {id: d.id, shop: d.shop, from: d.src, to: d.dst, land: d.land, drop: d.drop_, pp: pin(d.pp), dp: pin(d.dp), it: d.item, w: d.w, s: d.spd, price: d.price, goods: d.goods || 0, total: d.price + (d.goods || 0), items: d.items ? JSON.parse(d.items) : [], custom: d.custom || "", step: d.step, at: d.at};
+  const o = {id: d.id, shop: d.shop, from: d.src, to: d.dst, land: d.land, drop: d.drop_, pp: pin(d.pp), dp: pin(d.dp), it: d.item, w: d.w, s: d.spd, price: d.price, goods: d.goods || 0, total: d.price + (d.goods || 0), items: d.items ? JSON.parse(d.items) : [], custom: d.custom || "", step: d.step, at: d.at, shipOk: !!d.ship_ok, ownOk: !!d.own_ok};
   if (view === "s") Object.assign(o, {rn: d.rn, rp: d.rp, shipper: d.shipper ? true : "", shipperName: d.sname || "", shipperPhone: d.sphone || "", veh: d.veh || ""});
   if (view === "m") Object.assign(o, {rn: d.rn, rp: d.rp, sn: d.oname, sp: d.ophone, shipper: true});
   if (view === "j") Object.assign(o, {drop: "", dp: null}); /* exact drop-off is revealed only to the shipper who accepts */
@@ -588,10 +592,22 @@ api.post("/jobs/:id/accept", need("shipper"), approved, wrap(async (req, res) =>
   if (!r.changes) bad("Sorry, that job was already taken.", 409);
   res.json({ok: true});
 }));
+/* A delivery is Completed only when BOTH sides have signed off: the shipper ("I delivered it") and the sender ("I received it"), in either order. */
+async function signOff(id, col, who, whoId) {
+  const r = await q("UPDATE deliveries SET " + col + "=? WHERE id=? AND " + who + "=? AND step=1 AND " + col + " IS NULL").run(Date.now(), id, whoId);
+  if (!r.changes) return false;
+  await q("UPDATE deliveries SET step=2 WHERE id=? AND step=1 AND ship_ok IS NOT NULL AND own_ok IS NOT NULL").run(id);
+  return true;
+}
 api.post("/jobs/:id/deliver", need("shipper"), approved, wrap(async (req, res) => {
-  const r = await q("UPDATE deliveries SET step=2 WHERE id=? AND shipper=? AND step=1").run(String(req.params.id), req.user.id);
-  if (!r.changes) bad("That job cannot be marked delivered.", 409);
-  res.json({ok: true});
+  const id = String(req.params.id);
+  if (!(await signOff(id, "ship_ok", "shipper", req.user.id))) bad("That job cannot be marked delivered.", 409);
+  res.json({ok: true, done: (await q("SELECT step FROM deliveries WHERE id=?").get(id)).step === 2});
+}));
+api.post("/deliveries/:id/confirm", need("sender"), wrap(async (req, res) => {
+  const id = String(req.params.id);
+  if (!(await signOff(id, "own_ok", "owner", req.user.id))) bad("That delivery cannot be confirmed.", 409);
+  res.json({ok: true, done: (await q("SELECT step FROM deliveries WHERE id=?").get(id)).step === 2});
 }));
 
 api.use((req, res, next) => next(new HttpError(404, "Not found.")));

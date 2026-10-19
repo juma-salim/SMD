@@ -186,8 +186,13 @@ const delivery = (extra) => Object.assign({from: "Mombasa", to: "Diani", shop: "
   ok(sv.step === 1 && sv.shipperName && sv.shipperPhone, "sender sees shipper details and In Progress status");
   r = await A.call("DELETE", "/api/deliveries/" + d1.id); ok(r.s === 409, "cannot cancel after a shipper accepted");
   r = await A.call("POST", "/api/jobs/" + d1.id + "/deliver"); ok(r.s === 403, "sender cannot mark delivered");
-  r = await win.call("POST", "/api/jobs/" + d1.id + "/deliver"); ok(r.s === 200, "assigned shipper marks delivered");
-  r = await win.call("POST", "/api/jobs/" + d1.id + "/deliver"); ok(r.s === 409, "cannot deliver twice");
+  r = await win.call("POST", "/api/jobs/" + d1.id + "/deliver"); ok(r.s === 200 && r.j.done === false, "shipper signs off: not completed yet");
+  r = await win.call("POST", "/api/jobs/" + d1.id + "/deliver"); ok(r.s === 409, "shipper cannot sign off twice");
+  r = await A.call("GET", "/api/deliveries"); ok(r.j.find((x) => x.id === d1.id).step === 1 && r.j.find((x) => x.id === d1.id).shipOk === true, "still In Progress until the sender confirms");
+  r = await B.call("POST", "/api/deliveries/" + d1.id + "/confirm"); ok(r.s === 409, "another sender cannot confirm it");
+  r = await win.call("POST", "/api/deliveries/" + d1.id + "/confirm"); ok(r.s === 403, "shipper cannot confirm as sender");
+  r = await A.call("POST", "/api/deliveries/" + d1.id + "/confirm"); ok(r.s === 200 && r.j.done === true, "sender confirms: delivery Completed");
+  r = await A.call("POST", "/api/deliveries/" + d1.id + "/confirm"); ok(r.s === 409, "cannot confirm twice");
   r = await A.call("GET", "/api/deliveries"); ok(r.j.find((x) => x.id === d1.id).step === 2, "sender sees Completed");
   r = await win.call("POST", "/api/jobs/" + d1.id + "/accept"); ok(r.s === 409, "completed job cannot be re-accepted");
 

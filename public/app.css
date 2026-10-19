@@ -100,3 +100,7 @@ nav button span{display:block;font-size:20px}nav button.on{color:var(--pri);back
 .ied .btns .btn{margin-top:6px;padding:8px;font-size:12px}
 .tag{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:rgba(26,162,81,.15);color:var(--ok);white-space:nowrap}
 .tag.off{background:rgba(107,118,134,.18);color:var(--mut)}
+
+.pwbox{position:relative}.pwbox input{padding-right:46px}
+.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:none;border:0;color:var(--mut);cursor:pointer;border-radius:10px}
+.eye:hover,.eye:focus-visible{color:var(--pri)}
