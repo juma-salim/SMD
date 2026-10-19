@@ -263,7 +263,8 @@ app.use(helmet({
   crossOriginOpenerPolicy: {policy: "same-origin-allow-popups"}, /* required by Google sign-in popup */
   hsts: PROD ? {maxAge: 15552000, includeSubDomains: true} : false
 }));
-app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0}));
+app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0,
+  setHeaders: (res, file) => { if (path.basename(file) === "sw.js") res.set("Cache-Control", "no-cache"); }})); /* the service worker must always be re-checked so updates reach phones */
 
 const api = express.Router();
 api.use(express.json({limit: "20kb"}));

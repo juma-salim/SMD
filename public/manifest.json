@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Send Me Deliveries",
+  "short_name": "SMD",
+  "description": "Order from local shops, pay on delivery and track every step. Mombasa, Likoni, Kombani, Tiwi, Ukunda and Diani.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "lang": "en",
+  "background_color": "#f6f8fb",
+  "theme_color": "#ff6b00",
+  "categories": ["shopping", "business", "lifestyle"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
