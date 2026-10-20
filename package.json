@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "test": "node test.js"
+    "test": "node test.js && node test-mpesa.js"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

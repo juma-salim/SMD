@@ -15,12 +15,22 @@ const VEHICLES = ["Motorbike","Bicycle","Tuk-tuk","Pickup / van"];
 const BOX = {latMin:-4.75, latMax:-3.9, lngMin:39.3, lngMax:39.95};
 const ID_TYPES = ["National ID","Passport","Driving licence"];
 
-function quote(f, t, w, s) {
+/* Goods worth MORE than this (from a listed shop) may be paid for after delivery, through M-Pesa, once the sender confirms receipt. */
+const DEFER_MIN = +process.env.DEFER_MIN_GOODS || 999;
+/* The automatic route fee (ferry included). The admin can override it per pair of places; see the Fees tab. */
+function routeBase(f, t) {
   const d = Math.abs(AREAS[f].pos - AREAS[t].pos);
   const route = f === t ? P.local : P.base + Math.round(d * P.perKm);
   const ferry = (f !== t && ((f === "Mombasa") !== (t === "Mombasa"))) ? P.ferry : 0;
+  return {d, route, ferry};
+}
+/* fee: the admin's fixed route fee for this pair (replaces route + ferry), or null/undefined to use the formula. */
+function quote(f, t, w, s, fee) {
+  const b = routeBase(f, t), d = b.d, custom = Number.isInteger(fee);
+  const route = custom ? fee : b.route, ferry = custom ? 0 : b.ferry;
   const wf = WT[w].f, sub = route + wf + ferry;
   const ex = s === "express" ? Math.round(sub * P.expressPct) : 0;
   return {d, route, wf, ferry, ex, total: Math.round((sub + ex) / 10) * 10};
 }
-module.exports = {AREAS, SHOPS, P, WT, VEHICLES, BOX, ID_TYPES, quote};
+const feeKey = (a, b) => [a, b].sort().join("|");
+module.exports = {AREAS, SHOPS, P, WT, VEHICLES, BOX, ID_TYPES, DEFER_MIN, quote, routeBase, feeKey};

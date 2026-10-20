@@ -1,14 +1,15 @@
 (function(){
 "use strict";
-var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],GOOGLE_CLIENT_ID="";
+var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],GOOGLE_CLIENT_ID="",MPESA=false,FEES={},DEFER_MIN=999,payMethod="mpesa",payPoll=null;
 var STEPS=["Pending","In Progress","Completed"],OTHER="__other__";
 var speed="standard",mode="login",role="sender",me=null,busy=false,pins={pick:null,drop:null},myShops=[],cache={mine:[],jobs:[],jm:[]},pendingG=null,resendAt=0,adminTab="pending",docVer={},catalog=[],cart={},cartShop=null,lastQ=null,shopOpen={},adminShops=[];
 function $(i){return document.getElementById(i)}
 function el(t,c,txt){var e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e}
 function toast(m){var t=$("toast");t.textContent=m;t.classList.add("on");clearTimeout(toast.t);toast.t=setTimeout(function(){t.classList.remove("on")},2800)}
 function fmt(n){return "KES "+n.toLocaleString("en-KE")}
+function feeKey(a,b){return[a,b].sort().join("|")}
 function quote(f,t,w,s){var d=Math.abs(AREAS[f].pos-AREAS[t].pos),route=f===t?P.local:P.base+Math.round(d*P.perKm),
-  ferry=(f!==t&&((f==="Mombasa")!==(t==="Mombasa")))?P.ferry:0,wf=WT[w].f,sub=route+wf+ferry,ex=s==="express"?Math.round(sub*P.expressPct):0;
+  ferry=(f!==t&&((f==="Mombasa")!==(t==="Mombasa")))?P.ferry:0,custom=FEES[feeKey(f,t)];if(typeof custom==="number"){route=custom;ferry=0}var wf=WT[w].f,sub=route+wf+ferry,ex=s==="express"?Math.round(sub*P.expressPct):0;
   return{d:d,route:route,wf:wf,ferry:ferry,ex:ex,total:Math.round((sub+ex)/10)*10}}
 function norm(p){return p.replace(/[\s\-()]/g,"")}
 function phoneOk(p){return /^(\+?254|0)[17]\d{8}$/.test(norm(p))}
@@ -22,7 +23,7 @@ function api(method,path,body){
     function(){throw new Error("Cannot reach the server. Check your connection.")})}
 function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
 function resetLocal(){me=null;myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
-  ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","shopOther","land","drop","it","rn","rp","q"].forEach(function(i){$(i).value=""});
+  ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
   pins.pick=null;pins.drop=null;setRole("sender");setMode("login");show("auth")}
 
 /* Map */
@@ -72,14 +73,14 @@ function pinBlock(key,box,title){
 function initPins(){pins.pick=null;pins.drop=null;pinBlock("pick",$("pin-pick"),"Pickup");pinBlock("drop",$("pin-drop"),"Drop-off")}
 
 /* Navigation & roles */
-var VIEWS=["auth","home","new","hist","jobs","mine","verify","admin","shops","set"],SENDER=["home","new","hist"],SHIPPER=["jobs","mine"];
+var VIEWS=["auth","home","new","hist","jobs","mine","verify","admin","shops","fees","set"],SENDER=["home","new","hist"],SHIPPER=["jobs","mine"];
 function show(v){VIEWS.forEach(function(k){$("v-"+k).classList.toggle("on",k===v)});$("nav").classList.toggle("on",v!=="auth");
   document.querySelectorAll("#nav button").forEach(function(b){b.classList.toggle("on",b.dataset.go===v)});window.scrollTo(0,0)}
 function go(v){if(!me){show("auth");return}
-  if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="set")v="admin"}
-  else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops")v="jobs"}
-  else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops")v="home";
-  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops()}
+  if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="fees"&&v!=="set")v="admin"}
+  else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees")v="jobs"}
+  else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees")v="home";
+  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops();if(v==="fees")renderFees()}
 /* bottom bar: admins see Review; shippers see Verify until an admin approves them, then Jobs */
 function navFor(u){document.querySelectorAll("#nav button[data-r]").forEach(function(b){var h=b.dataset.r!==u.role;
   if(!h&&u.role==="shipper"){var ap=u.status==="approved";h=b.dataset.go==="verify"?ap:!ap}b.classList.toggle("hide",h)})}
@@ -277,14 +278,26 @@ function goodsSum(){var cs=curShop(),t=0;if(cs)cs.items.forEach(function(i){t+=i
 function renderGoods(){var cs=curShop(),box=$("goods");if((cs?cs.id:null)!==cartShop){cart={};cartShop=cs?cs.id:null}
   box.textContent="";$("goodsCard").style.display=cs&&cs.items.length?"block":"none";
   $("l-it").textContent=cs&&cs.items.length?"Other items not on the list (optional)":"Item name";
-  $("payNote").textContent=cs&&cs.items.length?"💵 Pay on delivery. Goods are priced per unit and added to the delivery fee. Anything you type in yourself is not priced yet.":"💵 Pay on delivery. Item cost is not included: this is the delivery fee only.";
+  syncPay();
   if(cs)cs.items.forEach(function(i){var row=el("div","gi"+(cart[i.id]?" on":"")),t=el("div","gt"),q=el("div","qty"),m=el("button",null,"−"),n=el("span",null,String(cart[i.id]||0)),p=el("button",null,"+");
     t.appendChild(el("b",null,i.name));t.appendChild(el("small",null,i.unit+" · "+fmt(i.price)));m.type="button";p.type="button";m.setAttribute("aria-label","Less "+i.name);p.setAttribute("aria-label","More "+i.name);
     function set(v){v=Math.max(0,Math.min(50,v));if(v)cart[i.id]=v;else delete cart[i.id];n.textContent=String(v);row.classList.toggle("on",v>0);m.disabled=!v;showTotal()}
     m.disabled=!cart[i.id];m.onclick=function(){set((cart[i.id]||0)-1)};p.onclick=function(){set((cart[i.id]||0)+1)};
     q.appendChild(m);q.appendChild(n);q.appendChild(p);row.appendChild(t);row.appendChild(q);box.appendChild(row)});
   showTotal()}
-function showTotal(){if(!lastQ)return;var g=goodsSum(),typed=$("it").value.trim().length>1,cs=curShop();countTo(lastQ.total+g);
+/* Checkout payment choice: pay on delivery, or pay now with an M-Pesa STK Push (only offered when the server has Daraja configured) */
+function syncPay(){var cs=curShop(),hasGoods=!!(cs&&cs.items.length),g=goodsSum(),lat=hasGoods&&g>DEFER_MIN,total=(lastQ?lastQ.total:0)+g;
+  if(payMethod==="later"&&!lat)payMethod="mpesa";if(!MPESA)payMethod="cod";
+  $("payWrap").style.display=MPESA?"block":"none";$("mpWrap").style.display=MPESA?"block":"none";
+  var lb=document.querySelector('#payM [data-p="later"]');lb.style.display=lat?"":"none";$("payM").style.gridTemplateColumns=lat?"":"1fr";
+  document.querySelectorAll("#payM button").forEach(function(b){b.classList.toggle("on",b.dataset.p===payMethod)});
+  var later=payMethod==="later";
+  $("payNote").textContent=!MPESA?(hasGoods?"💵 Pay on delivery. Goods are priced per unit and added to the delivery fee. Anything you type in yourself is not priced yet.":"💵 Pay on delivery. Item cost is not included: this is the delivery fee only.")
+    :later?"🤝 Your request goes to shippers now. After you confirm you have received your goods you pay "+fmt(total)+" by M-Pesa."
+    :"📲 You will get an M-Pesa PIN prompt on your phone. Your request goes to shippers once the payment is received."+(hasGoods?(g>DEFER_MIN?"":" Goods above "+fmt(DEFER_MIN)+" from a listed shop can be paid for after delivery."):" Item cost is not included: this is the delivery fee only.");
+  $("submit").textContent=later?"Send request (pay after delivery)":MPESA?"Pay "+fmt(total)+" & request":"Submit request"}
+$("payM").addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;payMethod=b.dataset.p;if(!$("mpPhone").value&&me)$("mpPhone").value=me.phone;syncPay()});
+function showTotal(){if(!lastQ)return;var g=goodsSum(),typed=$("it").value.trim().length>1,cs=curShop();countTo(lastQ.total+g);syncPay();
   $("sumLine").textContent=cs&&cs.items.length?"Delivery "+fmt(lastQ.total)+" + Goods "+fmt(g)+(typed?" + typed items (not priced)":""):"Delivery fee only";}
 $("it").addEventListener("input",showTotal);
 function fill(){var f=$("from"),t=$("to"),j=$("jf"),aa=$("a-area");order().forEach(function(c){f.add(new Option(c,c));t.add(new Option(c,c));j.add(new Option(c,c));aa.add(new Option(c,c));$("ns-area").add(new Option(c,c));$("sf").add(new Option(c,c))});
@@ -308,15 +321,41 @@ $("submit").addEventListener("click",function(){
   ["drop","rn"].forEach(function(k){if($(k).value.trim().length<2)bad.push(k)});
   if(!cartCount()&&$("it").value.trim().length<2)bad.push("it");
   if(!phoneOk($("rp").value))bad.push("rp");
+  var mp=MPESA&&payMethod==="mpesa",lt=MPESA&&payMethod==="later";if((mp||lt)&&!phoneOk($("mpPhone").value))bad.push("mpPhone");
   if(bad.length){bad.forEach(function(k){$(k).classList.add("bad")});$("err").textContent="Please complete the highlighted fields. Phone looks like 0712 345 678.";$(bad[0]).focus();return}
   $("err").textContent="";
-  var from=$("from").value,cs=curShop(),sv=$("shopSel").value,shop=other?$("shopOther").value.trim():cs?cs.name:sv.slice(2),btn=$("submit");busy=true;btn.disabled=true;
-  api("POST","/deliveries",{from:from,to:$("to").value,shop:shop,shopId:cs?cs.id:undefined,items:cs&&cartCount()?cartLines():undefined,custom:other,land:$("land").value.trim(),drop:$("drop").value.trim(),pp:pins.pick,dp:pins.drop,it:$("it").value.trim(),w:+$("wt").value,s:speed,rn:$("rn").value.trim(),rp:$("rp").value.trim()})
+  var from=$("from").value,cs=curShop(),sv=$("shopSel").value,shop=other?$("shopOther").value.trim():cs?cs.name:sv.slice(2),btn=$("submit"),mpNum=$("mpPhone").value.trim();busy=true;btn.disabled=true;
+  api("POST","/deliveries",{pay:mp?"mpesa":lt?"later":"cod",from:from,to:$("to").value,shop:shop,shopId:cs?cs.id:undefined,items:cs&&cartCount()?cartLines():undefined,custom:other,land:$("land").value.trim(),drop:$("drop").value.trim(),pp:pins.pick,dp:pins.drop,it:$("it").value.trim(),w:+$("wt").value,s:speed,rn:$("rn").value.trim(),rp:$("rp").value.trim()})
   .then(function(d){busy=false;btn.disabled=false;
     if(other&&!myShops.some(function(x){return x.a===from&&x.n.toLowerCase()===shop.toLowerCase()}))myShops.push({a:from,n:shop});
     ["shopOther","land","drop","it","rn","rp"].forEach(function(k){$(k).value=""});cart={};cartShop=null;fillShops();initPins();
+    if(d.payState==="awaiting"){go("hist");renderList(false,d.id);runPay(d,mpNum);return} /* order saved; now ask the phone for payment */
     toast("Request sent! ID "+d.id);go("hist");renderList(false,d.id)})
   .catch(function(e){busy=false;btn.disabled=false;$("err").textContent=e.message})});
+
+/* M-Pesa payment screen: send the STK Push, then poll until the callback (or a status query on the server) settles it */
+function payView(o){var s=$("pbI");$("payBox").style.display="grid";s.textContent=o.icon;s.classList.toggle("spin",!!o.spin);$("pbT").textContent=o.title;$("pbS").textContent=o.sub||"";
+  var ph=$("pbPhone");ph.style.display=o.phone!=null?"block":"none";if(o.phone!=null)ph.value=o.phone;
+  [["pbMain",o.main],["pbAlt",o.alt],["pbClose",o.close]].forEach(function(x){var b=$(x[0]);b.style.display=x[1]?"block":"none";if(x[1]){b.textContent=x[1][0];b.disabled=false;b.onclick=x[1][1]}})}
+function closePay(){clearInterval(payPoll);payPoll=null;$("payBox").style.display="none"}
+function afterPay(d,msg){closePay();if(msg)toast(msg);go("hist");renderList(false,d.id)}
+function askPay(d,phone,title,sub){payView({icon:"📲",title:title,sub:sub,phone:phone||(me?me.phone:""),
+  main:["Send M-Pesa request",function(){var n=$("pbPhone").value.trim();if(!phoneOk(n)){$("pbS").textContent="Enter a valid Safaricom number, e.g. 0712 345 678.";return}runPay(d,n)}],
+  alt:d.laterOk?["Pay after delivery instead",function(){$("pbAlt").disabled=true;api("POST","/deliveries/"+encodeURIComponent(d.id)+"/later").then(function(){afterPay(d,"Switched to pay after delivery. ID "+d.id)},function(e){afterPay(d);toast(e.message)})}]:null,
+  close:["Not now",function(){afterPay(d,"Saved. Tap Pay when you are ready.")}]})}
+function runPay(d,phone){payView({icon:"📲",title:"Sending request…",sub:"Contacting M-Pesa.",spin:true});
+  api("POST","/deliveries/"+encodeURIComponent(d.id)+"/pay",{phone:phone}).then(function(r){
+    payView({icon:"📲",title:"Check your phone",sub:"Enter your M-Pesa PIN to pay "+fmt(r.amount)+" from "+r.phone+". Keep this screen open.",spin:true});watchPay(d,phone)},
+    function(e){if(e.status===409&&/already open/.test(e.message))return watchPay(d,phone,true);askPay(d,phone,"Could not start payment",e.message)})}
+function watchPay(d,phone,resumed){var t0=Date.now(),inflight=false;clearInterval(payPoll);
+  if(resumed)payView({icon:"📲",title:"Check your phone",sub:"A payment request is already open on your phone. Enter your PIN to complete it.",spin:true});
+  payPoll=setInterval(function(){if(inflight)return;inflight=true;
+    api("GET","/deliveries/"+encodeURIComponent(d.id)+"/payment").then(function(j){inflight=false;
+      if(!payPoll)return;
+      if(j.state==="success"){clearInterval(payPoll);payView({icon:"✅",title:"Payment received",sub:"M-Pesa receipt "+(j.receipt||"")+". Shippers can now see your request.",main:["Track my request",function(){afterPay(d,"Paid. ID "+d.id)}]});return}
+      if(j.state!=="pending"&&j.state!=="initiating"){clearInterval(payPoll);askPay(d,phone,"Payment not completed",j.message||"The payment was not completed.");return}
+      if(Date.now()-t0>170000){clearInterval(payPoll);payView({icon:"⏳",title:"Still waiting",sub:"We have not heard back from M-Pesa yet. If money left your account, your request will update on its own within a few minutes.",close:["Close",function(){afterPay(d)}]})}
+    },function(){inflight=false})},3000)}
 
 function pillCls(s){return "pill"+(s===2?" d":s===0?" p":"")}
 function copyBtn(id){var b=el("button","btn sec","Copy tracking ID");b.addEventListener("click",function(e){e.stopPropagation();try{navigator.clipboard.writeText(id).then(function(){toast("Copied "+id)},function(){toast(id)})}catch(er){toast(id)}});return b}
@@ -331,15 +370,21 @@ function card(x,open,ctx){ /* ctx: s = sender, j = shipper job board, m = shippe
   if(ctx==="m")R.splice(2,0,["Recipient",x.rn+" · "+x.rp],["Sender",x.sn+" · "+x.sp]);
   (x.items||[]).forEach(function(l){R.push([l.q+" × "+l.n+(l.u?" ("+l.u+")":""),fmt(l.p*l.q)])});
   if(x.custom&&x.items&&x.items.length)R.push(["Other items (not priced)",x.custom]);
-  R.push(["Delivery fee",fmt(x.price)]);if(x.goods)R.push(["Goods",fmt(x.goods)]);R.push([ctx==="s"?"Total (pay on delivery)":"Total",fmt(x.price+x.goods)]);
+  R.push(["Delivery fee",fmt(x.price)]);if(x.goods)R.push(["Goods",fmt(x.goods)]);
+  R.push([ctx==="s"?(x.payState==="paid"?"Total (paid)":x.payState==="awaiting"?"Total (unpaid)":x.payState==="later"?"Total (pay after delivery)":"Total (pay on delivery)"):"Total",fmt(x.price+x.goods)]);
+  if(ctx==="s"||ctx==="m"){if(x.payState==="paid")R.push(["Payment","Paid with M-Pesa"+(x.receipt?" · "+x.receipt:"")]);else if(x.payState==="awaiting")R.push(["Payment","M-Pesa payment not completed"]);else if(x.payState==="later")R.push(["Payment",ctx==="s"?"M-Pesa after you confirm you received it":"The sender pays by M-Pesa after confirming receipt"]);else R.push(["Payment","On delivery"])}
+  if(ctx==="m"&&(x.payState==="paid"||x.payState==="later"))R.push(["Collect from recipient","Nothing: "+(x.payState==="paid"?"already paid by M-Pesa":"the sender pays through the app")]);
   R.forEach(function(r){var p=el("div");p.style.cssText="font-size:13px;margin:3px 0";var b=el("b",null,r[0]+": ");b.style.fontSize="13px";p.appendChild(b);p.appendChild(document.createTextNode(r[1]));dt.appendChild(p)});
   if(x.pp)dt.appendChild(pinChip(x.pp,"Pickup pin",ctx!=="s"));if(x.dp)dt.appendChild(pinChip(x.dp,"Drop-off pin",ctx!=="s"));
   if(ctx==="j"){var a=el("button","btn","Accept job");a.addEventListener("click",function(e){e.stopPropagation();a.disabled=true;
     api("POST","/jobs/"+encodeURIComponent(x.id)+"/accept").then(function(){toast("Job accepted. See My jobs.")},function(er){toast(er.message)}).then(renderJobs)});dt.appendChild(a)}
   if(ctx==="m"){var f=el("button","btn",x.step===2?"Completed ✓":x.shipOk?"Waiting for sender to confirm":"Mark as delivered");f.disabled=x.step!==1||x.shipOk;f.addEventListener("click",function(e){e.stopPropagation();f.disabled=true;
     api("POST","/jobs/"+encodeURIComponent(x.id)+"/deliver").then(function(j){toast(j.done?"Delivery completed":"Signed off. Waiting for the sender to confirm.")},function(er){toast(er.message)}).then(function(){renderMine(x.id)})});dt.appendChild(f)}
-  if(ctx==="s"&&x.step===1){var g=el("button","btn",x.ownOk?"Waiting for shipper to sign off":"Confirm I received it");g.disabled=x.ownOk;g.addEventListener("click",function(e){e.stopPropagation();g.disabled=true;
-    api("POST","/deliveries/"+encodeURIComponent(x.id)+"/confirm").then(function(j){toast(j.done?"Delivery completed":"Confirmed. Waiting for the shipper to sign off.")},function(er){toast(er.message)}).then(function(){renderList(false,x.id)})});dt.appendChild(g)}
+  if(ctx==="s"&&x.step===0&&x.payState==="awaiting"&&MPESA){var pb=el("button","btn","Pay "+fmt(x.price+x.goods)+" with M-Pesa");pb.addEventListener("click",function(e){e.stopPropagation();askPay(x,me.phone,"Pay with M-Pesa","We will send a PIN prompt for "+fmt(x.price+x.goods)+" to this number.")});dt.appendChild(pb)}
+  if(ctx==="s"&&x.step===1&&x.payState==="later"&&x.ownOk&&MPESA){var lp=el("button","btn","Pay "+fmt(x.price+x.goods)+" with M-Pesa");lp.addEventListener("click",function(e){e.stopPropagation();askPay(x,me.phone,"Pay with M-Pesa","We will send a PIN prompt for "+fmt(x.price+x.goods)+" to this number.")});dt.appendChild(lp)}
+  if(ctx==="s"&&x.step===1&&!x.ownOk){var g=el("button","btn",x.payState==="later"?"Confirm I received it, then pay":"Confirm I received it");g.addEventListener("click",function(e){e.stopPropagation();g.disabled=true;
+    api("POST","/deliveries/"+encodeURIComponent(x.id)+"/confirm").then(function(j){if(j.needPay){go("hist");renderList(false,x.id);askPay(x,me.phone,"Pay with M-Pesa","Thanks for confirming. We will send a PIN prompt for "+fmt(x.price+x.goods)+" to this number.");return}toast(j.done?"Delivery completed":"Confirmed. Waiting for the shipper to sign off.");renderList(false,x.id)},function(er){toast(er.message);renderList(false,x.id)})});dt.appendChild(g)}
+  if(ctx==="s"&&x.step===1&&x.ownOk&&x.payState!=="later")dt.appendChild(el("p","note","You confirmed. Waiting for the shipper to sign off."));
   if(ctx==="s"&&x.step===1&&x.shipOk&&!x.ownOk)dt.appendChild(el("p","note","The shipper says this was delivered. Confirm once you or your recipient has it."));
   dt.appendChild(copyBtn(x.id));
   if(ctx==="s"&&x.step===0){var b3=el("button","btn sec dng","Cancel request"),armed=false;b3.addEventListener("click",function(e){e.stopPropagation();
@@ -380,8 +425,24 @@ setInterval(function(){if(!me||document.hidden||busy)return;var v=document.query
 function init(){document.querySelector("header small").textContent=order().join(" \u00b7 ");fill();drawMap($("homeMap"));drawMap($("authMap"));setMode("login");slg();setInterval(tick,3600);loadG();
   api("GET","/me").then(function(j){start(j.user,j.shops)},function(){show("auth")})}
 fetch("/api/config",{credentials:"same-origin"}).then(function(r){return r.json()}).then(function(c){
-  AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
+  MPESA=!!c.mpesa;FEES=c.FEES||{};DEFER_MIN=c.DEFER_MIN||999;AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
   .catch(function(){document.querySelector(".wrap").prepend(el("div","card empty","Cannot reach the SMD server. Please refresh."))});
+/* Admin: delivery fees between places */
+function renderFees(){return api("GET","/admin/fees").then(function(j){drawFees(j.fees)},function(e){toast(e.message)})}
+function drawFees(list){var box=$("flist");box.textContent="";FEES={};
+  list.forEach(function(r){if(r.fee!=null)FEES[feeKey(r.a,r.b)]=r.fee;
+    var c=el("div","card"),t=el("div","top"),l=el("div"),title=r.a===r.b?"Within "+r.a:r.a+" ↔ "+r.b;
+    l.appendChild(el("b",null,title));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,r.fee!=null?"Your fee. Automatic would be "+fmt(r.auto):"Automatic fee"));
+    t.appendChild(l);t.appendChild(el("span","tag"+(r.fee!=null?"":" off"),r.fee!=null?"Custom":"Auto"));c.appendChild(t);
+    var row=el("div","row"),inp=document.createElement("input");inp.type="number";inp.min="10";inp.max="50000";inp.step="10";inp.inputMode="numeric";inp.value=r.fee!=null?r.fee:r.auto;inp.setAttribute("aria-label","Fee for "+title+" in KES");
+    var save=el("button","btn","Save"),rs=el("button","btn sec","Use automatic");save.style.marginTop=rs.style.marginTop="0";
+    var w1=el("div");w1.appendChild(inp);row.appendChild(w1);var w2=el("div");w2.appendChild(save);row.appendChild(w2);c.appendChild(row);
+    if(r.fee!=null){c.appendChild(rs)}
+    var err=el("div","err");err.setAttribute("role","alert");c.appendChild(err);
+    save.addEventListener("click",function(){var v=Math.round(+inp.value);err.textContent="";if(!(v>=10&&v<=50000)){err.textContent="Enter a fee between 10 and 50,000.";return}save.disabled=true;
+      api("PUT","/admin/fees",{a:r.a,b:r.b,fee:v}).then(function(j){toast("Saved: "+title+" "+fmt(v));drawFees(j.fees)},function(e){save.disabled=false;err.textContent=e.message})});
+    rs.addEventListener("click",function(){rs.disabled=true;api("DELETE","/admin/fees",{a:r.a,b:r.b}).then(function(j){toast("Back to the automatic fee");drawFees(j.fees)},function(e){rs.disabled=false;err.textContent=e.message})});
+    box.appendChild(c)})}
 })();
 
 /* Show/hide password: small eye button on every password box */

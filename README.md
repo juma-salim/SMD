@@ -87,3 +87,10 @@ Render's free disk is wiped on every deploy, so the database lives on Turso inst
 2. Copy the database URL (`libsql://...`) and create a database token (read and write).
 3. In Render > Environment add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, then save (Render redeploys).
 Everything stays the same for local work: with no Turso variables, `npm start` and `npm test` use a local file. Every database call is asynchronous (`await q(sql).get/all/run`).
+
+## M-Pesa (STK Push)
+Set the `MPESA_*` variables from `.env.example` (in Render → Environment). Until they are all set, the app shows no M-Pesa option and works exactly as before (pay on delivery). Test with `npm test` (includes `test-mpesa.js`, a mock Daraja server: no Safaricom account needed).
+
+### Delivery fees and pay-after-delivery
+- **Fees:** the admin sets the fee for any pair of places in the Fees tab. A fee set there replaces the automatic one (ferry included); weight surcharge and express extra still apply on top. "Use automatic" removes it.
+- **Pay after delivery:** with M-Pesa configured, every order is paid through M-Pesa. Orders from listed shops with goods above `DEFER_MIN_GOODS` (default 999) can be paid after delivery: the request goes to shippers at once, and the sender pays by STK Push after confirming receipt. Such an order is Completed only when the shipper has signed off, the sender has confirmed, and the payment has arrived. Without M-Pesa configured the app stays cash on delivery.

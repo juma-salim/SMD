@@ -104,3 +104,6 @@ nav button span{display:block;font-size:20px}nav button.on{color:var(--pri);back
 .pwbox{position:relative}.pwbox input{padding-right:46px}
 .eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:none;border:0;color:var(--mut);cursor:pointer;border-radius:10px}
 .eye:hover,.eye:focus-visible{color:var(--pri)}
+.paybox{position:fixed;inset:0;background:rgba(14,20,32,.62);display:grid;place-items:center;z-index:20;padding:16px}
+.paybox .card{max-width:360px;width:100%;text-align:center;margin:0}.paybox h3{margin:6px 0 4px;font-size:18px}
+.pbi{font-size:44px;line-height:1}.pbi.spin{animation:pbs 1.2s ease-in-out infinite}@keyframes pbs{50%{transform:scale(1.15)}}

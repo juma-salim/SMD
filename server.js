@@ -7,6 +7,7 @@ const path = require("node:path");
 const {promisify} = require("node:util");
 const {createClient} = require("@libsql/client");
 const C = require("./config");
+const M = require("./mpesa");
 
 const PROD = process.env.NODE_ENV === "production";
 const PORT = +process.env.PORT || 3000;
@@ -50,6 +51,13 @@ CREATE TABLE IF NOT EXISTS catalog_items(id INTEGER PRIMARY KEY, shop_id INTEGER
 CREATE UNIQUE INDEX IF NOT EXISTS ci_uni ON catalog_items(shop_id, name COLLATE NOCASE, unit COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS id_docs(uid INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(uid, kind));
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+/* Admin-set delivery fee for one pair of places (a|b stored in sorted order, so Likoni->Mombasa and Mombasa->Likoni share one fee) */
+CREATE TABLE IF NOT EXISTS fees(a TEXT NOT NULL, b TEXT NOT NULL, fee INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(a,b));
+CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, uid INTEGER NOT NULL, phone TEXT NOT NULL, amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'initiating', checkout_id TEXT UNIQUE, merchant_id TEXT, result_code INTEGER, result_desc TEXT, receipt TEXT,
+  created INTEGER NOT NULL, updated INTEGER NOT NULL, checked INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS pay_del ON payments(delivery_id);
+CREATE UNIQUE INDEX IF NOT EXISTS pay_active ON payments(delivery_id) WHERE status IN ('initiating','pending');
 `;
 /* Adds a column to an older database; harmless if it is already there. Returns true only when the column was just added. */
 async function addCol(table, col, def) {
@@ -60,7 +68,9 @@ async function addCol(table, col, def) {
 async function migrate() {
   if (await addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE users SET email_verified=1");
   for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"]]) await addCol("users", c, d);
-  for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"]]) await addCol("deliveries", c, d);
+  for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"],
+    /* pay: 'cod' (pay on delivery) or 'mpesa'. pay_state: 'na' | 'awaiting' (M-Pesa chosen, not yet paid: hidden from the job board) | 'paid' */
+    ["pay", "TEXT NOT NULL DEFAULT 'cod'"], ["pay_state", "TEXT NOT NULL DEFAULT 'na'"], ["receipt", "TEXT"]]) await addCol("deliveries", c, d);
 }
 
 /* Sample shops and goods so the app is usable on day one. Seeded once only (flag kept in the meta table); the admin replaces them in the app (Shops tab). */
@@ -79,6 +89,15 @@ async function seedCatalog() {
   await db.batch(stmts, "write");
 }
 
+/* Route fees set by the admin, cached in memory (reloaded after every change). Key = "A|B" (sorted). */
+let FEES = {};
+async function loadFees() {
+  const o = {};
+  for (const r of await q("SELECT a,b,fee FROM fees").all()) if (Object.hasOwn(C.AREAS, r.a) && Object.hasOwn(C.AREAS, r.b)) o[C.feeKey(r.a, r.b)] = r.fee;
+  FEES = o;
+}
+const feeFor = (f, t) => (Object.hasOwn(FEES, C.feeKey(f, t)) ? FEES[C.feeKey(f, t)] : null);
+
 /* Admins are the verified accounts whose email is listed in ADMIN_EMAIL (comma-separated). Nobody can become admin from inside the app. */
 const ADMINS = (process.env.ADMIN_EMAIL || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 async function syncAdmins() {
@@ -96,6 +115,7 @@ async function initDb() {
   await db.executeMultiple(SCHEMA2);
   await seedCatalog();
   await syncAdmins();
+  await loadFees();
 }
 
 /* ---------- Helpers ---------- */
@@ -171,7 +191,8 @@ const approved = (req, res, next) => (req.user.status === "approved" ? next() : 
 /* ---------- Delivery mapping (field names match the original UI) ---------- */
 const pin = (s) => (s ? JSON.parse(s) : null);
 function mapD(d, view) { /* view: s = sender (owner), j = open job board, m = shipper's own job */
-  const o = {id: d.id, shop: d.shop, from: d.src, to: d.dst, land: d.land, drop: d.drop_, pp: pin(d.pp), dp: pin(d.dp), it: d.item, w: d.w, s: d.spd, price: d.price, goods: d.goods || 0, total: d.price + (d.goods || 0), items: d.items ? JSON.parse(d.items) : [], custom: d.custom || "", step: d.step, at: d.at, shipOk: !!d.ship_ok, ownOk: !!d.own_ok};
+  const o = {id: d.id, shop: d.shop, from: d.src, to: d.dst, land: d.land, drop: d.drop_, pp: pin(d.pp), dp: pin(d.dp), it: d.item, w: d.w, s: d.spd, price: d.price, goods: d.goods || 0, total: d.price + (d.goods || 0), items: d.items ? JSON.parse(d.items) : [], custom: d.custom || "", step: d.step, at: d.at, shipOk: !!d.ship_ok, ownOk: !!d.own_ok, pay: d.pay, payState: d.pay_state, deferMin: C.DEFER_MIN};
+  if (view === "s" || view === "m") { o.receipt = d.receipt || ""; o.laterOk = d.pay_state === "awaiting" && laterOk(d); }
   if (view === "s") Object.assign(o, {rn: d.rn, rp: d.rp, shipper: d.shipper ? true : "", shipperName: d.sname || "", shipperPhone: d.sphone || "", veh: d.veh || ""});
   if (view === "m") Object.assign(o, {rn: d.rn, rp: d.rp, sn: d.oname, sp: d.ophone, shipper: true});
   if (view === "j") Object.assign(o, {drop: "", dp: null}); /* exact drop-off is revealed only to the shipper who accepts */
@@ -263,8 +284,7 @@ app.use(helmet({
   crossOriginOpenerPolicy: {policy: "same-origin-allow-popups"}, /* required by Google sign-in popup */
   hsts: PROD ? {maxAge: 15552000, includeSubDomains: true} : false
 }));
-app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0,
-  setHeaders: (res, file) => { if (path.basename(file) === "sw.js") res.set("Cache-Control", "no-cache"); }})); /* the service worker must always be re-checked so updates reach phones */
+app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0}));
 
 const api = express.Router();
 api.use(express.json({limit: "20kb"}));
@@ -283,7 +303,7 @@ api.use(auth);
 const authLimit = rateLimit({windowMs: 60000, limit: +process.env.AUTH_RATE_LIMIT || 20, standardHeaders: true, legacyHeaders: false, message: {error: "Too many attempts. Please wait a minute."}});
 const wrap = (f) => (req, res, next) => Promise.resolve(f(req, res)).catch(next);
 
-api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID}));
+api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID, mpesa: M.enabled(), FEES, DEFER_MIN: C.DEFER_MIN}));
 
 /* Shipper identification details (validated on the server; the ID number is normalised so one ID cannot back two accounts) */
 function idIn(b) {
@@ -558,21 +578,34 @@ api.post("/deliveries", need("sender"), wrap(async (req, res) => {
   if (!phoneOk(b.rp)) bad("Recipient phone looks like 0712 345 678.");
   if (!Number.isInteger(b.w) || !C.WT[b.w]) bad("Choose a valid weight.");
   if (b.s !== "standard" && b.s !== "express") bad("Choose a valid speed.");
+  /* How the order is paid. With M-Pesa configured there are two ways, both through the gateway:
+     "mpesa" = pay now, before shippers see the request; "later" = pay after delivery, once the sender confirms receipt (listed shops, goods above the limit only).
+     Without M-Pesa configured the app works as before: cash on delivery. */
+  let pay = "cod";
+  if (M.enabled()) {
+    if (b.pay !== "mpesa" && b.pay !== "later") bad("Please refresh the page and choose how to pay.");
+    pay = b.pay;
+    if (pay === "later" && !(shopId != null && goods > C.DEFER_MIN)) bad("Pay after delivery is only for goods above KES " + C.DEFER_MIN + " from our listed shops. Choose pay now.");
+  }
   const pp = pinIn(b.pp), dp = pinIn(b.dp);
   if ((await q("SELECT COUNT(*) c FROM deliveries WHERE owner=? AND step=0").get(req.user.id)).c >= 20) bad("You have too many pending requests. Cancel some or wait for pickup.", 429);
-  const price = C.quote(b.from, b.to, b.w, b.s).total; /* price is always computed server-side */
+  const price = C.quote(b.from, b.to, b.w, b.s, feeFor(b.from, b.to)).total; /* price is always computed server-side */
   if (b.custom && shopId == null) try { await q("INSERT INTO shops(uid,area,name) VALUES(?,?,?)").run(req.user.id, b.from, shop); } catch (e) {}
   let id;
   for (let i = 0; i < 5; i++) {
     id = "SMD-" + crypto.randomBytes(3).toString("hex").toUpperCase();
-    try { await q("INSERT INTO deliveries(id,owner,shop,src,dst,land,drop_,pp,dp,item,w,spd,rn,rp,price,step,at,items,goods,custom) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)").run(id, req.user.id, shop, b.from, b.to, land, drop, pp, dp, item, b.w, b.s, rn, b.rp.trim(), price, Date.now(), lines.length ? JSON.stringify(lines) : null, goods, custom); break; }
+    try { await q("INSERT INTO deliveries(id,owner,shop,src,dst,land,drop_,pp,dp,item,w,spd,rn,rp,price,step,at,items,goods,custom,pay,pay_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)").run(id, req.user.id, shop, b.from, b.to, land, drop, pp, dp, item, b.w, b.s, rn, b.rp.trim(), price, Date.now(), lines.length ? JSON.stringify(lines) : null, goods, custom, pay, pay === "mpesa" ? "awaiting" : pay === "later" ? "later" : "na"); break; }
     catch (e) { id = null; }
   }
   if (!id) bad("Could not create request. Try again.", 500);
   res.status(201).json(mapD(await q("SELECT * FROM deliveries WHERE id=?").get(id), "s"));
 }));
 api.delete("/deliveries/:id", need("sender"), wrap(async (req, res) => {
-  const r = await q("DELETE FROM deliveries WHERE id=? AND owner=? AND step=0").run(String(req.params.id), req.user.id);
+  const id = String(req.params.id);
+  const d = await q("SELECT pay_state FROM deliveries WHERE id=? AND owner=? AND step=0").get(id, req.user.id);
+  if (d && d.pay_state === "paid") bad("This request is already paid by M-Pesa. Contact support to cancel and get a refund.", 409);
+  if (d && await q("SELECT 1 x FROM payments WHERE delivery_id=? AND status IN ('initiating','pending')").get(id)) bad("An M-Pesa payment is in progress. Wait a minute, then try again.", 409);
+  const r = await q("DELETE FROM deliveries WHERE id=? AND owner=? AND step=0 AND pay_state<>'paid'").run(id, req.user.id);
   if (!r.changes) bad("Only your own pending requests can be cancelled.", 409);
   res.json({ok: true});
 }));
@@ -580,8 +613,8 @@ api.delete("/deliveries/:id", need("sender"), wrap(async (req, res) => {
 /* Shipper */
 api.get("/jobs", need("shipper"), approved, wrap(async (req, res) => {
   const a = String(req.query.area || "all"); if (a !== "all" && !Object.hasOwn(C.AREAS, a)) bad("Invalid area.");
-  const rows = a === "all" ? await q("SELECT * FROM deliveries WHERE step=0 AND shipper IS NULL ORDER BY at DESC LIMIT 100").all()
-    : await q("SELECT * FROM deliveries WHERE step=0 AND shipper IS NULL AND src=? ORDER BY at DESC LIMIT 100").all(a);
+  const rows = a === "all" ? await q("SELECT * FROM deliveries WHERE step=0 AND shipper IS NULL AND pay_state<>'awaiting' ORDER BY at DESC LIMIT 100").all()
+    : await q("SELECT * FROM deliveries WHERE step=0 AND shipper IS NULL AND pay_state<>'awaiting' AND src=? ORDER BY at DESC LIMIT 100").all(a);
   res.json(rows.map((d) => mapD(d, "j")));
 }));
 api.get("/jobs/mine", need("shipper"), approved, wrap(async (req, res) =>
@@ -589,15 +622,17 @@ api.get("/jobs/mine", need("shipper"), approved, wrap(async (req, res) =>
 api.post("/jobs/:id/accept", need("shipper"), approved, wrap(async (req, res) => {
   if ((await q("SELECT COUNT(*) c FROM deliveries WHERE shipper=? AND step=1").get(req.user.id)).c >= 10) bad("Finish your active jobs before accepting more.", 429);
   const u = req.user; /* single atomic UPDATE: only one shipper can win */
-  const r = await q("UPDATE deliveries SET shipper=?, sname=?, sphone=?, veh=?, step=1 WHERE id=? AND step=0 AND shipper IS NULL").run(u.id, u.name, u.phone, u.veh, String(req.params.id));
+  const r = await q("UPDATE deliveries SET shipper=?, sname=?, sphone=?, veh=?, step=1 WHERE id=? AND step=0 AND shipper IS NULL AND pay_state<>'awaiting'").run(u.id, u.name, u.phone, u.veh, String(req.params.id));
   if (!r.changes) bad("Sorry, that job was already taken.", 409);
   res.json({ok: true});
 }));
 /* A delivery is Completed only when BOTH sides have signed off: the shipper ("I delivered it") and the sender ("I received it"), in either order. */
+/* Completed = both signed off AND, for pay-after-delivery orders, the M-Pesa payment received. */
+const finalize = (id) => q("UPDATE deliveries SET step=2 WHERE id=? AND step=1 AND ship_ok IS NOT NULL AND own_ok IS NOT NULL AND pay_state<>'later'").run(id);
 async function signOff(id, col, who, whoId) {
   const r = await q("UPDATE deliveries SET " + col + "=? WHERE id=? AND " + who + "=? AND step=1 AND " + col + " IS NULL").run(Date.now(), id, whoId);
   if (!r.changes) return false;
-  await q("UPDATE deliveries SET step=2 WHERE id=? AND step=1 AND ship_ok IS NOT NULL AND own_ok IS NOT NULL").run(id);
+  await finalize(id);
   return true;
 }
 api.post("/jobs/:id/deliver", need("shipper"), approved, wrap(async (req, res) => {
@@ -608,11 +643,135 @@ api.post("/jobs/:id/deliver", need("shipper"), approved, wrap(async (req, res) =
 api.post("/deliveries/:id/confirm", need("sender"), wrap(async (req, res) => {
   const id = String(req.params.id);
   if (!(await signOff(id, "own_ok", "owner", req.user.id))) bad("That delivery cannot be confirmed.", 409);
-  res.json({ok: true, done: (await q("SELECT step FROM deliveries WHERE id=?").get(id)).step === 2});
+  const d = await q("SELECT step, pay_state FROM deliveries WHERE id=?").get(id);
+  res.json({ok: true, done: d.step === 2, needPay: d.pay_state === "later"}); /* needPay: the sender now pays through M-Pesa */
+}));
+
+/* ---------- M-Pesa (Daraja STK Push) ---------- */
+/* Applies a final result to a payment exactly once. Safe to call from the callback AND from the status poll: whichever arrives first wins.
+   Money moved (code 0) is always honoured, even if we had already marked the attempt failed/timed out locally. */
+async function settle(p, r) { /* r = {code, desc, amount?, receipt?} */
+  const now = Date.now();
+  if (r.code === 0) {
+    if (["success", "duplicate", "mismatch", "orphan"].includes(p.status)) return p.status;
+    if (r.amount != null && r.amount !== p.amount) { /* never mark an order paid for the wrong amount: flag for a human */
+      await q("UPDATE payments SET status='mismatch', result_code=0, result_desc=?, receipt=?, updated=? WHERE id=?").run("expected " + p.amount + " got " + r.amount, r.receipt, now, p.id);
+      console.error("[mpesa] AMOUNT MISMATCH payment", p.id, "order", p.delivery_id, "expected", p.amount, "got", r.amount, "receipt", r.receipt); return "mismatch";
+    }
+    const d = await q("SELECT pay_state FROM deliveries WHERE id=?").get(p.delivery_id);
+    let st = "success";
+    if (!d) st = "orphan"; /* order was deleted while the prompt was open: needs a refund */
+    else if (d.pay_state === "paid") st = "duplicate"; /* customer paid twice: needs a refund */
+    await q("UPDATE payments SET status=?, result_code=0, result_desc=?, receipt=?, updated=? WHERE id=?").run(st, r.desc || "OK", r.receipt || null, now, p.id);
+    if (st === "success") { await q("UPDATE deliveries SET pay_state='paid', pay='mpesa', receipt=? WHERE id=?").run(r.receipt || null, p.delivery_id); await finalize(p.delivery_id); }
+    else console.error("[mpesa] REFUND NEEDED (" + st + ") payment", p.id, "order", p.delivery_id, "amount", p.amount, "receipt", r.receipt);
+    return st;
+  }
+  if (p.status !== "initiating" && p.status !== "pending") return p.status; /* a late "failed" must never undo anything */
+  const st = r.code === 1032 ? "cancelled" : r.code === -1 ? "timeout" : "failed";
+  await q("UPDATE payments SET status=?, result_code=?, result_desc=?, updated=? WHERE id=?").run(st, r.code, r.desc || "", now, p.id);
+  return st;
+}
+
+const QUERY_AFTER = +process.env.PAY_QUERY_AFTER_MS || 12000, QUERY_EVERY = +process.env.PAY_QUERY_EVERY_MS || 8000; /* env overrides exist for tests */
+const PAYFLOW_MS = +process.env.PAY_TIMEOUT_MS || 3 * 60000; /* an STK prompt is dead after ~1 minute; after 3 we stop waiting and let the customer retry */
+const payRow = (id) => q("SELECT * FROM payments WHERE id=?").get(id);
+const ownDelivery = async (req) => (await q("SELECT * FROM deliveries WHERE id=? AND owner=?").get(String(req.params.id), req.user.id)) || bad("Not found.", 404);
+const payLimit = rateLimit({windowMs: 60000, limit: +process.env.PAY_RATE_LIMIT || 6, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => "u" + req.user.id, message: {error: "Too many payment attempts. Please wait a minute."}});
+
+/* Start a payment: sends the PIN prompt to the customer's phone. The amount is ALWAYS computed here from the stored order. */
+api.post("/deliveries/:id/pay", need("sender"), payLimit, wrap(async (req, res) => {
+  if (!M.enabled()) bad("M-Pesa payment is not available right now.", 503);
+  const d = await ownDelivery(req);
+  if (d.pay_state === "paid") bad("This request is already paid.", 409);
+  /* payable: a pay-now order still waiting for its money, or a pay-after-delivery order whose sender has confirmed receipt */
+  if (!((d.pay_state === "awaiting" && d.step === 0) || (d.pay_state === "later" && d.step === 1 && d.own_ok))) bad("This request cannot be paid online right now.", 409);
+  const phone = req.body.phone == null ? req.user.phone : req.body.phone;
+  if (typeof phone !== "string" || !phoneOk(phone) || !M.toMsisdn(phone)) bad("Enter a valid Safaricom number, e.g. 0712 345 678.");
+  const amount = d.price + (d.goods || 0), now = Date.now();
+  let id;
+  try { id = Number((await q("INSERT INTO payments(delivery_id,uid,phone,amount,status,created,updated) VALUES(?,?,?,?, 'initiating',?,?)").run(d.id, req.user.id, M.toMsisdn(phone), amount, now, now)).lastInsertRowid); }
+  catch (e) { /* unique index pay_active: a prompt for this order is already open */
+    const old = await q("SELECT * FROM payments WHERE delivery_id=? AND status IN ('initiating','pending')").get(d.id);
+    if (old && now - old.created > PAYFLOW_MS) { await settle(old, {code: -1, desc: "No response from customer"}); return res.status(409).json({error: "The previous request expired. Tap Pay again."}); }
+    bad("A payment request is already open on your phone. Enter your PIN, or wait a minute and try again.", 409);
+  }
+  try {
+    const r = await M.stkPush({phone, amount, ref: d.id, desc: "SMD delivery"});
+    await q("UPDATE payments SET status='pending', checkout_id=?, merchant_id=?, updated=? WHERE id=? AND status='initiating'").run(r.checkoutRequestId, r.merchantRequestId, Date.now(), id);
+    res.status(202).json({status: "pending", amount, phone: r.msisdn.replace(/^254/, "0")});
+  } catch (e) {
+    await q("UPDATE payments SET status='failed', result_desc=?, updated=? WHERE id=?").run(String(e.message).slice(0, 200), Date.now(), id);
+    if (e.user) bad(e.message); if (!(e instanceof Error) || e.name !== "AbortError") console.error("[mpesa] pay error:", e.message);
+    bad(e.message && /M-Pesa/.test(e.message) ? e.message : "Could not reach M-Pesa. Please try again.", 502);
+  }
+}));
+
+/* Poll target for the checkout screen. If the callback is late we ask Safaricom directly (at most every 8 s), so a lost callback never strands a customer. */
+api.get("/deliveries/:id/payment", need("sender"), wrap(async (req, res) => {
+  const d = await ownDelivery(req);
+  let p = await q("SELECT * FROM payments WHERE delivery_id=? ORDER BY id DESC LIMIT 1").get(d.id);
+  if (p && d.pay_state !== "paid" && (p.status === "pending" || p.status === "initiating")) {
+    const now = Date.now();
+    if (p.status === "pending" && p.checkout_id && now - p.created > QUERY_AFTER && now - p.checked > QUERY_EVERY) {
+      await q("UPDATE payments SET checked=? WHERE id=?").run(now, p.id);
+      try { const s = await M.stkQuery(p.checkout_id); if (!s.pending) await settle(await payRow(p.id), {code: s.code, desc: s.desc}); } catch (e) { /* try again on the next poll */ }
+    }
+    p = await payRow(p.id);
+    if ((p.status === "pending" || p.status === "initiating") && now - p.created > PAYFLOW_MS) { await settle(p, {code: -1, desc: "No response from customer"}); p = await payRow(p.id); }
+  }
+  const dd = await q("SELECT pay_state, receipt FROM deliveries WHERE id=?").get(d.id), st = dd.pay_state === "paid" ? "success" : p ? p.status : "none";
+  res.json({state: st, payState: dd.pay_state, receipt: dd.receipt || "", message: st === "success" ? "Payment received." : st === "pending" || st === "initiating" ? "Waiting for you to enter your M-Pesa PIN…" : p && p.result_code != null ? M.explain(p.result_code) : p ? "The payment was not completed." : ""});
+}));
+
+/* Customer would rather pay after delivery (only allowed for listed-shop orders with goods above the limit): the order goes to the job board. */
+const laterOk = (d) => !!d.items && d.goods > C.DEFER_MIN;
+api.post("/deliveries/:id/later", need("sender"), wrap(async (req, res) => {
+  const d = await ownDelivery(req);
+  if (!laterOk(d)) bad("Pay after delivery is only for goods above KES " + C.DEFER_MIN + " from our listed shops.", 409);
+  if (await q("SELECT 1 x FROM payments WHERE delivery_id=? AND status IN ('initiating','pending')").get(d.id)) bad("An M-Pesa payment is still in progress. Wait a minute, then try again.", 409);
+  const r = await q("UPDATE deliveries SET pay='later', pay_state='later' WHERE id=? AND owner=? AND step=0 AND pay_state='awaiting'").run(d.id, req.user.id);
+  if (!r.changes) bad("This request cannot be switched to pay after delivery.", 409);
+  res.json(mapD(await q("SELECT * FROM deliveries WHERE id=?").get(d.id), "s"));
+}));
+
+/* ---------- Admin: delivery fees between places ---------- */
+const placePairs = () => { const n = Object.keys(C.AREAS).sort((a, b) => C.AREAS[a].pos - C.AREAS[b].pos), o = []; n.forEach((a, i) => n.slice(i).forEach((b) => o.push([a, b]))); return o; };
+const feeRows = () => placePairs().map(([a, b]) => { const bs = C.routeBase(a, b), k = C.feeKey(a, b); return {a, b, auto: bs.route + bs.ferry, fee: Object.hasOwn(FEES, k) ? FEES[k] : null}; });
+api.get("/admin/fees", need("admin"), wrap(async (req, res) => res.json({fees: feeRows(), note: "Fee for one trip before weight surcharge and express."})));
+api.put("/admin/fees", need("admin"), wrap(async (req, res) => {
+  const b = req.body || {};
+  if (!Object.hasOwn(C.AREAS, b.a) || !Object.hasOwn(C.AREAS, b.b)) bad("Choose valid places.");
+  if (!Number.isInteger(b.fee) || b.fee < 10 || b.fee > 50000) bad("Fee must be a whole number between 10 and 50,000.");
+  const [x, y] = [b.a, b.b].sort();
+  await q("INSERT INTO fees(a,b,fee,updated) VALUES(?,?,?,?) ON CONFLICT(a,b) DO UPDATE SET fee=excluded.fee, updated=excluded.updated").run(x, y, b.fee, Date.now());
+  await loadFees(); res.json({fees: feeRows()});
+}));
+api.delete("/admin/fees", need("admin"), wrap(async (req, res) => { /* back to the automatic fee */
+  const b = req.body || {}; if (!Object.hasOwn(C.AREAS, b.a) || !Object.hasOwn(C.AREAS, b.b)) bad("Choose valid places.");
+  const [x, y] = [b.a, b.b].sort(); await q("DELETE FROM fees WHERE a=? AND b=?").run(x, y);
+  await loadFees(); res.json({fees: feeRows()});
 }));
 
 api.use((req, res, next) => next(new HttpError(404, "Not found.")));
 app.use("/api", api);
+/* Safaricom's result callback. Lives outside /api (no cookie, no Origin header). The secret in the path is the authentication;
+   optionally also pin Safaricom's source IPs with MPESA_CALLBACK_IPS (comma-separated; needs TRUST_PROXY behind a proxy).
+   We always answer 200 quickly once the request is authentic: Safaricom retries otherwise, and we apply results idempotently anyway. */
+const eq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+const ALLOW_IPS = (process.env.MPESA_CALLBACK_IPS || "").split(",").map((s) => s.trim().replace(/^::ffff:/, "")).filter(Boolean);
+app.post("/hooks/pay/:secret", rateLimit({windowMs: 60000, limit: 120, standardHeaders: false, legacyHeaders: false}), express.json({limit: "20kb"}), async (req, res) => {
+  const secret = M.cfg().callbackSecret;
+  if (!secret || !eq(req.params.secret, secret)) return res.status(404).end();
+  if (ALLOW_IPS.length && !ALLOW_IPS.includes(String(req.ip).replace(/^::ffff:/, ""))) { console.error("[mpesa] callback from unlisted IP", req.ip); return res.status(404).end(); }
+  try {
+    const cb = M.parseCallback(req.body), p = cb && await q("SELECT * FROM payments WHERE checkout_id=?").get(cb.checkoutRequestId);
+    if (!p) console.error("[mpesa] callback for unknown or malformed request", cb ? cb.checkoutRequestId : "(bad body)");
+    else await settle(p, {code: cb.code, desc: cb.desc, amount: cb.amount, receipt: cb.receipt});
+  } catch (e) { console.error("[mpesa] callback error:", e.message); }
+  res.json({ResultCode: 0, ResultDesc: "Accepted"});
+});
+
 app.use((err, req, res, next) => {
   if (err.type === "entity.parse.failed") err = new HttpError(400, "Invalid JSON.");
   if (err.type === "entity.too.large") err = new HttpError(413, "Request too large.");
