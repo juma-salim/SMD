@@ -8,6 +8,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Baloo+2:wght@600;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/app.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#ff6b00">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="SMD">
 </head>
 <body>
 <div class="wrap">
@@ -31,6 +35,7 @@
     <div class="err" id="aErr" role="alert"></div>
     <button class="btn" id="aBtn">Log in</button>
     <div style="display:flex;justify-content:space-between;margin-top:6px"><button class="lnk" id="aSw">New here? Sign up</button><button class="lnk" id="aFg">Forgot password?</button></div>
+    <div style="text-align:center;margin-top:10px"><button class="btn sec installBtn" type="button" style="display:none">📲 Install the SMD app</button><p class="note iosHint" style="display:none">On iPhone: tap the Share button, then “Add to Home Screen”.</p></div>
     <div id="g-google"><div class="or"><span>or</span></div><div id="gBtn"></div><p class="gnote" id="gNote"></p></div>
   </div>
 </section>
@@ -147,8 +152,15 @@
     <label for="p-email">Email</label><input id="p-email" readonly>
     <div class="err" id="pErr" role="alert"></div>
     <button class="btn" id="pSave">Save changes</button></div>
-  <div class="card"><b>Payment</b><p class="note">Pay now with M-Pesa when you request a delivery (you get a PIN prompt on your phone), or pay the shipper in cash or M-Pesa when the item arrives.</p></div>
+  <div class="card"><b>Payment</b><p class="note">Pay with M-Pesa when you request a delivery: you get a PIN prompt on your phone. For goods above KES 999 from our listed shops you can pay after your goods arrive.</p></div>
+  <div class="card"><b>About</b><div><button class="btn sec installBtn" type="button" style="display:none;margin-top:6px">📲 Install the SMD app</button><p class="note iosHint" style="display:none">On iPhone: tap the Share button, then “Add to Home Screen”.</p></div><p class="note"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> · <a href="/delete-account" target="_blank" rel="noopener">Delete account help</a></p></div>
   <div class="card"><button class="btn sec dng" id="out" style="margin-top:0">Log out</button></div>
+  <div class="card" id="delCard"><button class="btn sec dng" id="delOpen" style="margin-top:0">Delete my account</button>
+    <div id="delBox" style="display:none"><p class="note">This permanently deletes your profile, sign-in details and your own delivery requests, and for shippers your ID details and photos. It cannot be undone.</p>
+      <label for="delPw">Password <span class="note">(leave empty if you sign in with Google)</span></label><input id="delPw" type="password" autocomplete="current-password">
+      <label for="delTxt">Type DELETE to confirm</label><input id="delTxt" autocomplete="off" autocapitalize="characters">
+      <div class="err" id="delErr" role="alert"></div>
+      <button class="btn sec dng" id="delGo">Delete my account for good</button></div></div>
 </section>
 </div>
 
@@ -172,5 +184,6 @@
 <div class="toast" id="toast"></div>
 
 <script src="/app.js"></script>
+<script src="/pwa.js"></script>
 </body>
 </html>

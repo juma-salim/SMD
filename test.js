@@ -259,6 +259,34 @@ const delivery = (extra) => Object.assign({from: "Mombasa", to: "Diani", shop: "
   const A2 = new Agent(); r = await A2.call("POST", "/api/auth/login", {email: "A@X.co", password: "brand-new-pass-1"}); ok(r.s === 200, "login with new password (email case-insensitive)");
   const tok = A2.cookie; r = await A2.call("POST", "/api/auth/logout"); const rep = new Agent(); rep.cookie = tok; r = await rep.call("GET", "/api/me"); ok(r.s === 401, "logout invalidates the session server-side");
 
+  console.log("Installable app (PWA)");
+  r = await fetch(BASE + "/manifest.webmanifest"); const mfj = await r.json().catch(() => ({}));
+  ok(r.status === 200 && /manifest\+json/.test(r.headers.get("content-type")) && mfj.display === "standalone" && mfj.start_url === "/" && mfj.icons.some((i) => i.sizes === "512x512"), "web app manifest is valid and installable");
+  r = await fetch(BASE + "/sw.js"); const swt = await r.text(); ok(r.status === 200 && /javascript/.test(r.headers.get("content-type")) && /no-cache/.test(r.headers.get("cache-control")), "service worker is served fresh (no-cache)");
+  ok(!/\/api/.test(swt) && /navigate/.test(swt), "service worker never touches API calls (no personal data cached)");
+  for (const f of mfj.icons.map((i) => i.src).concat(["/apple-touch-icon.png", "/offline.html"])) { r = await fetch(BASE + f); ok(r.status === 200, "served: " + f); }
+
+  console.log("Legal pages + account deletion");
+  r = await fetch(BASE + "/privacy"); const ptxt = await r.text(); ok(/Privacy Policy/.test(ptxt) && !/{{/.test(ptxt), "privacy policy renders with no template leftovers");
+  r = await fetch(BASE + "/delete-account"); ok(r.status === 200 && /Delete my account/.test(await r.text()), "account-deletion help page is public");
+  const DA = new Agent(), dsig = sig("del@x.co", {name: "Delete Me"}); await register(DA, dsig);
+  r = await DA.call("POST", "/api/deliveries", delivery({})); const delOrder = r.j;
+  r = await DA.call("POST", "/api/me/delete", {confirm: "nope", password: "correct-horse-9"}); ok(r.s === 400, "deletion needs the word DELETE");
+  r = await DA.call("POST", "/api/me/delete", {confirm: "DELETE", password: "wrong-password-1"}); ok(r.s === 403, "deletion needs the right password");
+  r = await anon.call("POST", "/api/me/delete", {confirm: "DELETE"}); ok(r.s === 401, "must be logged in to delete");
+  r = await ADM.call("POST", "/api/me/delete", {confirm: "DELETE", password: "correct-horse-9"}); ok(r.s === 403, "administrator accounts cannot be deleted in the app");
+  const DS = new Agent(); await approvedShipper(DS, "delship@x.co", {});
+  r = await DS.call("POST", "/api/jobs/" + delOrder.id + "/accept"); ok(r.s === 200, "(setup) shipper accepts the order");
+  r = await DA.call("POST", "/api/me/delete", {confirm: "DELETE", password: "correct-horse-9"}); ok(r.s === 409, "a sender with a delivery in progress cannot delete yet");
+  r = await DS.call("POST", "/api/me/delete", {confirm: "DELETE", password: "correct-horse-9"}); ok(r.s === 409, "a shipper with a delivery in progress cannot delete yet");
+  await DS.call("POST", "/api/jobs/" + delOrder.id + "/deliver"); await DA.call("POST", "/api/deliveries/" + delOrder.id + "/confirm");
+  r = await DS.call("POST", "/api/me/delete", {confirm: "DELETE", password: "correct-horse-9"}); ok(r.s === 200, "shipper deletes the account after finishing the job");
+  r = await DS.call("GET", "/api/me"); ok(r.s === 401, "deleted account's session is gone");
+  r = await new Agent().call("POST", "/api/auth/login", {email: "delship@x.co", password: "correct-horse-9"}); ok(r.s === 401, "deleted account cannot log in");
+  r = await DA.call("GET", "/api/deliveries"); const kept = r.j.find((d) => d.id === delOrder.id); ok(kept && kept.shipperName === "Deleted user" && kept.shipperPhone === "", "the sender's record keeps the job without the shipper's identity");
+  r = await DA.call("POST", "/api/me/delete", {confirm: "DELETE", password: "correct-horse-9"}); ok(r.s === 200, "sender deletes the account");
+  const dchk = new DatabaseSync(path.join(dir, "t.db")); ok(dchk.prepare("SELECT COUNT(*) c FROM users WHERE email IN ('del@x.co','delship@x.co')").get().c === 0 && dchk.prepare("SELECT COUNT(*) c FROM id_docs WHERE uid NOT IN (SELECT id FROM users)").get().c === 0, "no user rows or orphaned ID photos remain");
+
   const dbRaw = ["t.db", "t.db-wal"].map((f) => { try { return fs.readFileSync(path.join(dir, f)).toString("latin1"); } catch (e) { return ""; } }).join("");
   ok(!dbRaw.includes("brand-new-pass-1") && !dbRaw.includes("correct-horse-9") && /s1\$/.test(dbRaw), "database stores only salted scrypt hashes");
   ok(!dbRaw.includes("squatter-pass-1") && !dbRaw.includes("owner-pass-1234"), "no plaintext passwords from the verification flow either");

@@ -1,5 +1,6 @@
 "use strict";
 const express = require("express");
+const fs = require("fs");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const crypto = require("node:crypto");
@@ -284,7 +285,20 @@ app.use(helmet({
   crossOriginOpenerPolicy: {policy: "same-origin-allow-popups"}, /* required by Google sign-in popup */
   hsts: PROD ? {maxAge: 15552000, includeSubDomains: true} : false
 }));
-app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0}));
+/* Legal pages (needed by app stores): the contact line comes from SUPPORT_EMAIL so it can be changed without editing code. */
+const legalPage = (file) => (req, res, next) => {
+  try {
+    const t = fs.readFileSync(path.join(__dirname, "legal", file), "utf8");
+    const mail = String(process.env.SUPPORT_EMAIL || "").trim(), esc = (x) => x.replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+    const contact = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(mail) ? '<a href="mailto:' + esc(mail) + '">' + esc(mail) + "</a>" : "the contact email on our Google Play listing";
+    res.type("html").send(t.replace(/{{CONTACT}}/g, contact).replace(/{{DATE}}/g, "October 2026"));
+  } catch (e) { next(e); }
+};
+app.get(["/privacy", "/privacy-policy"], legalPage("privacy.html"));
+app.get(["/delete-account", "/delete"], legalPage("delete-account.html"));
+app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0, setHeaders: (res, p) => {
+  if (/[\\/](sw\.js|manifest\.webmanifest)$/.test(p)) res.setHeader("Cache-Control", "no-cache"); /* the browser must always see a new service worker / manifest */
+}}));
 
 const api = express.Router();
 api.use(express.json({limit: "20kb"}));
@@ -437,6 +451,21 @@ api.post("/auth/google/complete", authLimit, wrap(async (req, res) => {
   res.status(201).json({user: await pub(await q("SELECT * FROM users WHERE id=?").get(uid))});
 }));
 
+/* Delete my account (required by app stores). Refused while money or a delivery is in flight; otherwise everything personal is removed. */
+api.post("/me/delete", need(), wrap(async (req, res) => {
+  const u = req.user, b = req.body || {};
+  if (u.role === "admin") bad("Administrator accounts cannot be deleted from the app.", 403);
+  if (b.confirm !== "DELETE") bad("Type DELETE to confirm.");
+  if (u.pw) { await guard("del:" + u.id); if (typeof b.password !== "string" || !(await checkPw(b.password, u.pw))) { await fail("del:" + u.id); bad("Wrong password.", 403); } await clear("del:" + u.id); }
+  const busy = (await q("SELECT COUNT(*) c FROM deliveries WHERE (owner=? AND (step=1 OR (step=0 AND pay_state='paid'))) OR (shipper=? AND step=1)").get(u.id, u.id)).c
+    || (await q("SELECT COUNT(*) c FROM payments WHERE uid=? AND status IN ('initiating','pending')").get(u.id)).c;
+  if (busy) bad("You still have a delivery in progress or a paid request that is not complete. Finish or cancel it first, then delete your account.", 409);
+  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(u.id);
+  await q("DELETE FROM deliveries WHERE owner=?").run(u.id);
+  await q("UPDATE deliveries SET shipper=NULL, sname='Deleted user', sphone='', veh=NULL WHERE shipper=?").run(u.id); /* completed jobs stay on the sender's record without the shipper's identity */
+  await q("DELETE FROM users WHERE id=?").run(u.id);
+  res.clearCookie(COOKIE, {path: "/"}); res.json({ok: true});
+}));
 api.get("/me", need(), wrap(async (req, res) => res.json({user: await pub(req.user), shops: await q("SELECT area AS a, name AS n FROM shops WHERE uid=?").all(req.user.id)})));
 api.patch("/me", need(), wrap(async (req, res) => {
   const name = str(req.body.name, 2, 60, "Full name"); if (!phoneOk(req.body.phone)) bad("Enter a valid phone number.");

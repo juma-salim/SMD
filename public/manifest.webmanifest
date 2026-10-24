@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Send Me Deliveries",
+  "short_name": "SMD",
+  "description": "Get goods from shops delivered to your door. Pay with M-Pesa.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f8fb",
+  "theme_color": "#ff6b00",
+  "lang": "en",
+  "categories": ["shopping", "business"],
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
