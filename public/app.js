@@ -1,6 +1,6 @@
 (function(){
 "use strict";
-var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],GOOGLE_CLIENT_ID="",MPESA=false,FEES={},DEFER_MIN=999,payMethod="mpesa",payPoll=null;
+var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],PUSH=false,VAPID="",seenJobs=null,GOOGLE_CLIENT_ID="",MPESA=false,FEES={},DEFER_MIN=999,payMethod="mpesa",payPoll=null;
 var STEPS=["Pending","In Progress","Completed"],OTHER="__other__";
 var speed="standard",mode="login",role="sender",me=null,busy=false,pins={pick:null,drop:null},myShops=[],cache={mine:[],jobs:[],jm:[]},pendingG=null,resendAt=0,adminTab="pending",docVer={},catalog=[],cart={},cartShop=null,lastQ=null,shopOpen={},adminShops=[];
 function $(i){return document.getElementById(i)}
@@ -22,8 +22,8 @@ function api(method,path,body){
     if(!r.ok){var e=new Error(j.error||"Request failed.");e.status=r.status;e.data=j;if(r.status===401&&me&&path.indexOf("/auth/")!==0)sessionEnded();throw e}return j})},
     function(){throw new Error("Cannot reach the server. Check your connection.")})}
 function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
-function resetLocal(){me=null;myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
-  ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
+function resetLocal(){me=null;seenJobs=null;myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
+  ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
   pins.pick=null;pins.drop=null;setRole("sender");setMode("login");show("auth")}
 
 /* Map */
@@ -73,14 +73,15 @@ function pinBlock(key,box,title){
 function initPins(){pins.pick=null;pins.drop=null;pinBlock("pick",$("pin-pick"),"Pickup");pinBlock("drop",$("pin-drop"),"Drop-off")}
 
 /* Navigation & roles */
-var VIEWS=["auth","home","new","hist","jobs","mine","verify","admin","shops","fees","set"],SENDER=["home","new","hist"],SHIPPER=["jobs","mine"];
+var VIEWS=["auth","home","new","hist","jobs","mine","verify","admin","shops","fees","owner","set"],SENDER=["home","new","hist"],SHIPPER=["jobs","mine"];
 function show(v){VIEWS.forEach(function(k){$("v-"+k).classList.toggle("on",k===v)});$("nav").classList.toggle("on",v!=="auth");
   document.querySelectorAll("#nav button").forEach(function(b){b.classList.toggle("on",b.dataset.go===v)});window.scrollTo(0,0)}
 function go(v){if(!me){show("auth");return}
-  if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="fees"&&v!=="set")v="admin"}
-  else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees")v="jobs"}
-  else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees")v="home";
-  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops();if(v==="fees")renderFees()}
+  if(me.role==="owner"){if(v!=="owner"&&v!=="set")v="owner"}
+  else if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="fees"&&v!=="set")v="admin"}
+  else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees"||v==="owner")v="jobs"}
+  else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees"||v==="owner")v="home";
+  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops();if(v==="fees")renderFees();if(v==="owner")renderOwner();if(v==="set")pushRefresh()}
 /* bottom bar: admins see Review; shippers see Verify until an admin approves them, then Jobs */
 function navFor(u){document.querySelectorAll("#nav button[data-r]").forEach(function(b){var h=b.dataset.r!==u.role;
   if(!h&&u.role==="shipper"){var ap=u.status==="approved";h=b.dataset.go==="verify"?ap:!ap}b.classList.toggle("hide",h)})}
@@ -91,8 +92,8 @@ document.addEventListener("click",function(e){var g=e.target.closest("[data-go]"
 
 /* Auth */
 function setRole(r){role=r;document.querySelectorAll("#roleSeg button").forEach(function(b){b.classList.toggle("on",b.dataset.r===r)});
-  $("g-ship").style.display=((mode==="signup"||mode==="gsetup")&&r==="shipper")?"block":"none";
-  $("roleNote").textContent=r==="sender"?"Request deliveries from local shops.":"Accept delivery jobs and get paid on delivery."}
+  var su=mode==="signup"||mode==="gsetup";$("g-ship").style.display=(su&&r==="shipper")?"block":"none";$("g-owner").style.display=(su&&r==="owner")?"block":"none";
+  $("roleNote").textContent=r==="sender"?"Request deliveries from local shops.":r==="owner"?"Sell through SMD: list your goods and their prices.":"Accept delivery jobs and get paid on delivery."}
 function setMode(m){mode=m;$("aErr").textContent="";
   var T={login:["Welcome back","Log in to continue.","Log in","New here? Sign up"],signup:["Create account","Choose your account type to begin.","Sign up","Have an account? Log in"],
     forgot:["Reset password","Enter your email and we will send you a reset code.","Send reset code","Back to log in"],
@@ -116,8 +117,8 @@ function resendCode(){var em=$("a-email").value.trim().toLowerCase();if(Date.now
 $("a-pw").addEventListener("keydown",function(e){if(e.key==="Enter")$("aBtn").click()});
 function aerr(m){$("aErr").textContent=m;busy=false;$("aBtn").disabled=false}
 function work(){busy=true;$("aBtn").disabled=true}
-function shipFields(b){if(role==="shipper"){b.veh=$("a-veh").value;b.area=$("a-area").value;b.idType=$("a-idt").value;b.idNumber=$("a-idn").value.trim();b.dob=$("a-dob").value;b.address=$("a-addr").value.trim()}return b}
-function shipCheck(){if(role!=="shipper")return"";if(!/^[A-Za-z0-9\/\s-]{5,20}$/.test($("a-idn").value.trim()))return"Enter your ID number.";if(!$("a-dob").value)return"Enter your date of birth.";if($("a-addr").value.trim().length<5)return"Enter your home address.";return""}
+function shipFields(b){if(role==="owner"){b.shopName=$("a-shop").value.trim();b.area=$("a-oarea").value}if(role==="shipper"){b.veh=$("a-veh").value;b.area=$("a-area").value;b.idType=$("a-idt").value;b.idNumber=$("a-idn").value.trim();b.dob=$("a-dob").value;b.address=$("a-addr").value.trim()}return b}
+function shipCheck(){if(role==="owner")return $("a-shop").value.trim().length<2?"Enter your shop name.":"";if(role!=="shipper")return"";if(!/^[A-Za-z0-9\/\s-]{5,20}$/.test($("a-idn").value.trim()))return"Enter your ID number.";if(!$("a-dob").value)return"Enter your date of birth.";if($("a-addr").value.trim().length<5)return"Enter your home address.";return""}
 $("aBtn").addEventListener("click",function(){
   if(busy)return;var name=$("a-name").value.trim(),ph=$("a-phone").value.trim(),em=$("a-email").value.trim().toLowerCase(),pw=$("a-pw").value,code=$("a-code").value.trim();
   $("aErr").textContent="";
@@ -136,11 +137,14 @@ $("aBtn").addEventListener("click",function(){
   req.then(function(j){if(j.needsVerify)return toVerify(j.email,"We sent a 6-digit code to "+j.email+". Enter it to continue.");start(j.user)})
     .catch(function(e){if(e.data&&e.data.needsVerify)return toVerify(e.data.email||em,e.message);fl(e)})});
 function start(u,shops){
-  me=u;myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr"].forEach(function(i){$(i).value=""});navFor(u);
+  me=u;myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop"].forEach(function(i){$(i).value=""});navFor(u);
   var f=u.name.split(" ")[0];$("hi").textContent="Hi, "+f+"!";$("hj").textContent="Hi, "+f+"!";
-  if(u.role==="sender"){initPins();if(!shops)api("GET","/me").then(function(j){myShops=j.shops;fillShops()},function(){});fillShops();loadCatalog()}else if(u.role==="shipper")$("jf").value=u.area||"all";
-  go(u.role==="admin"?"admin":u.role==="shipper"?"jobs":"home")}
-$("out").addEventListener("click",function(){api("POST","/auth/logout").catch(function(){}).then(function(){resetLocal();toast("Logged out")})});
+  if(u.role==="sender"){initPins();if(!shops)api("GET","/me").then(function(j){myShops=j.shops;fillShops()},function(){});fillShops();loadCatalog()}else if(u.role==="shipper"){$("jf").value=u.area||"all";pushSync();watchStart()}
+  go(u.role==="admin"?"admin":u.role==="owner"?"owner":u.role==="shipper"?"jobs":"home")}
+$("delOpen").addEventListener("click",function(){var b=$("delBox");b.style.display=b.style.display==="none"?"block":"none"});
+$("delGo").addEventListener("click",function(){var btn=$("delGo");$("delErr").textContent="";if($("delTxt").value.trim()!=="DELETE"){$("delErr").textContent="Type DELETE to confirm.";return}
+  btn.disabled=true;api("POST","/me/delete",{confirm:"DELETE",password:$("delPw").value}).then(function(){$("delPw").value="";$("delTxt").value="";$("delBox").style.display="none";resetLocal();toast("Your account has been deleted")},function(e){btn.disabled=false;$("delErr").textContent=e.message})});
+$("out").addEventListener("click",function(){pushDrop().then(function(){return api("POST","/auth/logout")}).catch(function(){}).then(function(){resetLocal();toast("Logged out")})});
 
 /* Google sign-in (token is verified by the server) */
 var gReady=false;
@@ -155,13 +159,91 @@ function gFinish(name,ph){if(!pendingG)return aerr("Please start again with Goog
   if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck();if(se)return aerr(se);
   work();api("POST","/auth/google/complete",shipFields({setup:pendingG.setup,name:name,phone:ph,role:role})).then(function(j){pendingG=null;start(j.user)}).catch(function(e){aerr(e.message)})}
 
+/* Ratings: 1-5 stars, shown as filled/empty stars */
+function starStr(n){var r=Math.round(n),o="";for(var i=1;i<=5;i++)o+=i<=r?"★":"☆";return o}
+function starsRow(t,n){var p=el("div"),a=el("span","stars",starStr(n));p.style.cssText="font-size:13px;margin:6px 0";p.appendChild(document.createTextNode(t));p.appendChild(a);return p}
+function rateBox(x){var w=el("div"),h=el("b",null,"How was the delivery? Rate your shipper"),r=el("div","rate");h.style.cssText="font-size:13px;display:block;margin-top:8px";w.appendChild(h);
+  for(var i=1;i<=5;i++)(function(n){var b=el("button",null,"★");b.type="button";b.setAttribute("aria-label",n+" star"+(n>1?"s":""));
+    b.onmouseenter=function(){[].forEach.call(r.children,function(c,k){c.classList.toggle("on",k<n)})};
+    b.onclick=function(e){e.stopPropagation();[].forEach.call(r.children,function(c){c.disabled=true});
+      api("POST","/deliveries/"+encodeURIComponent(x.id)+"/rate",{stars:n}).then(function(){toast("Thanks for rating!")},function(er){toast(er.message)}).then(function(){renderList(false,x.id)})};r.appendChild(b)})(i);
+  r.onmouseleave=function(){[].forEach.call(r.children,function(c){c.classList.remove("on")})};w.appendChild(r);return w}
+
+/* Near you (sender home): recommended shops and available shippers with their ratings */
+function nearRow(l1,l2,btn){var d=el("div","nb"),t=el("div");t.appendChild(el("b",null,l1));t.appendChild(el("small",null,l2));d.appendChild(t);if(btn)d.appendChild(btn);return d}
+function loadNear(){var a=$("nbArea").value;try{localStorage.setItem("smd_area",a)}catch(e){}
+  return api("GET","/nearby?area="+encodeURIComponent(a)).then(function(j){if(j.area!==$("nbArea").value)return;var sb=$("nbShops"),pb=$("nbShips");sb.textContent="";pb.textContent="";
+    if(!j.shops.length)sb.appendChild(el("p","note","No recommended shops in "+a+" yet. You can still type any shop when you request a delivery."));
+    j.shops.forEach(function(s){var b=el("button","lnk","Order");b.type="button";b.onclick=function(){orderFrom(a,s.id)};sb.appendChild(nearRow(s.name,s.goods?s.goods+" goods listed":"Tell us what you need",b))});
+    if(!j.shippers.length)pb.appendChild(el("p","note","No shippers are free in "+a+" right now. Requests still reach shippers from nearby areas."));
+    j.shippers.forEach(function(p){var r=p.avg==null?"New · no ratings yet":null,d=nearRow(p.name,p.veh+" · "+p.done+" delivered"),st=el("div");st.style.textAlign="right";
+      if(r)st.appendChild(el("small",null,"New"));else{st.appendChild(el("span","stars",starStr(p.avg)));st.appendChild(el("small",null,p.avg.toFixed(1)+" ("+p.count+")"))}d.appendChild(st);pb.appendChild(d)})},function(){})}
+function orderFrom(a,id){$("from").value=a;fillShops();var s=$("shopSel");s.value="c:"+id;shopToggle();updatePrice();go("new")}
+$("nbArea").addEventListener("change",loadNear);
+
+/* Shop owner dashboard: add, hide and remove goods */
+var ownerShop=null;
+function ownerDraw(j){ownerShop=j.shop;var sh=j.shop,st=$("oState");st.textContent="";
+  $("o-name").value=sh.name;
+  var tg=el("span","tag"+(sh.approved?"":" warn"),sh.approved?"✓ Live: customers can order from you":"Waiting for admin approval");
+  var l=el("p","note",sh.approved?"Shop area: "+sh.area+(sh.rec?" · ⭐ Recommended by SMD":""):"Shop area: "+sh.area+". Customers cannot see your shop until an admin approves it. You can add your goods now.");
+  st.appendChild(tg);st.appendChild(l);
+  var box=$("oList");box.textContent="";var ad=$("oAdd");ad.textContent="";ad.appendChild(ownerEditor(null));
+  if(!sh.items.length){box.appendChild(el("div","card empty","No goods yet. Add your first one above."));return}
+  var c=el("div","card");c.appendChild(el("b",null,"Your goods ("+sh.items.length+")"));sh.items.forEach(function(it){c.appendChild(ownerEditor(it))});box.appendChild(c)}
+function oCall(method,path,body,done){return api(method,path,body).then(function(j){ownerDraw(j);if(done)done()},function(e){toast(e.message)})}
+function ownerEditor(it){var d=el("div","ied"),r=el("div","row"),nm=el("input"),un=el("input"),pr=el("input"),r2=el("div","row"),bt=el("div","btns");
+  nm.value=it?it.name:"";nm.maxLength=60;nm.placeholder="Item (e.g. Sugar)";nm.setAttribute("aria-label","Item name");
+  un.value=it?it.unit:"";un.maxLength=20;un.placeholder="Unit (e.g. 1 kg)";un.setAttribute("aria-label","Unit");
+  pr.type="number";pr.inputMode="numeric";pr.min="1";pr.value=it?it.price:"";pr.placeholder="Price KES";pr.setAttribute("aria-label","Price in shillings");
+  r.style.gridTemplateColumns="1fr";r.appendChild(nm);d.appendChild(r);r2.appendChild(un);r2.appendChild(pr);d.appendChild(r2);
+  function body(){var p=numIn(pr.value);if(nm.value.trim().length<2||!un.value.trim()||!(p>0)){toast("Fill in the item, unit and a price.");return null}return{name:nm.value.trim(),unit:un.value.trim(),price:p}}
+  if(it){var sv=el("button","btn sec","Save"),hd=el("button","btn sec",it.active?"Hide":"Show"),rm=el("button","btn sec dng","Remove"),armed=false;
+    sv.onclick=function(){var b=body();if(b)oCall("PATCH","/owner/items/"+it.id,b,function(){toast("Saved")})};
+    hd.onclick=function(){oCall("PATCH","/owner/items/"+it.id,{active:!it.active})};
+    rm.onclick=function(){if(!armed){armed=true;rm.textContent="Tap again";setTimeout(function(){armed=false;rm.textContent="Remove"},3000);return}oCall("DELETE","/owner/items/"+it.id,null,function(){toast("Removed")})};
+    bt.style.gridTemplateColumns="repeat(3,1fr)";bt.appendChild(sv);bt.appendChild(hd);bt.appendChild(rm);if(!it.active)nm.style.opacity=".55"}
+  else{var a=el("button","btn","Add good");a.style.marginTop="6px";a.onclick=function(){var b=body();if(b)oCall("POST","/owner/items",b,function(){toast("Added")})};bt.style.gridTemplateColumns="1fr";bt.appendChild(a)}
+  d.appendChild(bt);return d}
+function renderOwner(){return api("GET","/owner/shop").then(ownerDraw,function(e){toast(e.message)})}
+$("o-save").addEventListener("click",function(){var n=$("o-name").value.trim();$("oErr").textContent="";if(n.length<2){$("oErr").textContent="Enter the shop name.";return}
+  api("PATCH","/owner/shop",{name:n}).then(function(j){ownerDraw(j);toast("Shop name saved")},function(e){$("oErr").textContent=e.message})});
+
+/* Job alerts for shippers: phone notifications (Web Push) plus an in-app alert while the app is open */
+function b64u(t){var p="=".repeat((4-t.length%4)%4),b=(t+p).replace(/-/g,"+").replace(/_/g,"/"),r=atob(b),o=new Uint8Array(r.length);for(var i=0;i<r.length;i++)o[i]=r.charCodeAt(i);return o}
+function pushOk(){return PUSH&&"serviceWorker" in navigator&&"PushManager" in window&&"Notification" in window}
+function pushReg(){return navigator.serviceWorker.ready}
+function pushSub(){return pushOk()?pushReg().then(function(r){return r.pushManager.getSubscription()}):Promise.resolve(null)}
+function pushRefresh(){var c=$("pushCard");if(!me||me.role!=="shipper"||me.status!=="approved"||!PUSH){c.style.display="none";return}c.style.display="block";
+  if(!pushOk()){$("pushNote").textContent="This browser cannot show job alerts. Install SMD from Chrome (Settings > Install the SMD app) or use the latest Chrome on Android.";$("pushBtn").style.display="none";return}
+  $("pushBtn").style.display="block";
+  if(window.Notification&&Notification.permission==="denied"){$("pushNote").textContent="Notifications are blocked for SMD. Allow them in your browser or phone settings, then come back.";$("pushBtn").style.display="none";return}
+  pushSub().then(function(sub){$("pushBtn").textContent=sub?"Turn off job alerts":"Turn on job alerts";$("pushBtn").dataset.on=sub?"1":"";
+    $("pushNote").textContent=sub?"On: you will get an alert when a new delivery appears near your base area. You stay signed in on this phone to receive them.":"Get a phone alert when a new delivery appears near you, even when the app is closed. You must stay logged in."})}
+function pushSend(sub){return api("POST","/push/subscribe",sub.toJSON())}
+$("pushBtn").addEventListener("click",function(){var b=$("pushBtn");b.disabled=true;
+  var p=b.dataset.on?pushDrop().then(function(){toast("Job alerts are off")}):Notification.requestPermission().then(function(r){if(r!=="granted")throw new Error("Allow notifications to get job alerts.");
+    return pushReg().then(function(reg){return reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(VAPID)})})}).then(pushSend).then(function(){toast("Job alerts are on")});
+  p.catch(function(e){toast(e.message||"Could not change job alerts.")}).then(function(){b.disabled=false;pushRefresh()})});
+function pushDrop(){return pushSub().then(function(sub){if(!sub)return;var ep=sub.endpoint;return api("POST","/push/unsubscribe",{endpoint:ep}).catch(function(){}).then(function(){return sub.unsubscribe()})}).catch(function(){})}
+function pushSync(){if(!pushOk()||!me||me.status!=="approved"||Notification.permission!=="granted")return;pushSub().then(function(sub){if(sub)pushSend(sub).catch(function(){})}).catch(function(){})}
+/* While the app is open, check for new jobs near the shipper's base every 20 s and tell them right away */
+var watching=false;
+function watchStart(){if(watching)return;watching=true;setInterval(function(){
+  if(!me||me.role!=="shipper"||me.status!=="approved"||document.hidden)return;
+  api("GET","/jobs?area=all").then(function(list){var ids={};list.forEach(function(j){ids[j.id]=1});
+    if(seenJobs){var fresh=list.filter(function(j){return !seenJobs[j.id]&&AREAS[me.area]&&Math.abs(AREAS[j.from].pos-AREAS[me.area].pos)<=10});
+      if(fresh.length){var j=fresh[0];toast("🔔 New job: "+j.from+" → "+j.to+" · "+fmt(j.price));try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch(e){}
+        var v=document.querySelector(".view.on");if(v&&v.id==="v-jobs")renderJobs()}}
+    seenJobs=ids},function(){})},20000)}
+
 /* Slogans */
 var SLG=["Si lazima uende dukani","Hii ni ya wavivu"],si=0;
 function slg(){document.querySelectorAll("[data-slg]").forEach(function(e){e.textContent=SLG[si]})}
 function tick(){var a=document.querySelectorAll("[data-slg]");a.forEach(function(e){e.classList.add("off")});setTimeout(function(){si=(si+1)%SLG.length;slg();a.forEach(function(e){e.classList.remove("off")})},400)}
 
 /* Profile */
-function fillProfile(){$("p-role").value=me.role==="admin"?"Administrator":me.role==="shipper"?"Shipper · "+me.veh+" · "+me.area+" · "+({approved:"Verified",pending:"Under review",rejected:"Needs changes",draft:"ID needed"}[me.status]||""):"Sender";
+function fillProfile(){$("p-role").value=me.role==="admin"?"Administrator":me.role==="owner"?"Shop owner":me.role==="shipper"?"Shipper · "+me.veh+" · "+me.area+" · "+({approved:"Verified",pending:"Under review",rejected:"Needs changes",draft:"ID needed"}[me.status]||""):"Sender";
   var lk=me.role==="shipper"&&(me.status==="pending"||me.status==="approved");$("p-name").readOnly=lk;$("p-lock").style.display=lk?"block":"none";$("p-name").value=me.name;$("p-phone").value=me.phone;$("p-email").value=me.email;$("pErr").textContent=""}
 $("pSave").addEventListener("click",function(){var n=$("p-name").value.trim(),p=$("p-phone").value.trim();
   if(n.length<2){$("pErr").textContent="Enter your full name.";return}if(!phoneOk(p)){$("pErr").textContent="Enter a valid phone number.";return}
@@ -247,8 +329,8 @@ function itemEditor(sh,it){var d=el("div","ied"),r=el("div","row"),nm=el("input"
   d.appendChild(bt);return d}
 function adminShopCard(sh){var c=el("div","card"),top=el("div"),l=el("div"),open=!!shopOpen[sh.id];top.style.cssText="display:flex;justify-content:space-between;align-items:center;gap:8px";
   l.appendChild(el("b",null,sh.name));l.appendChild(document.createElement("br"));l.appendChild(el("small",null,sh.area+" · "+sh.items.length+" goods"));top.appendChild(l);
-  var tg=el("div");tg.style.cssText="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end";tg.appendChild(el("span",sh.rec?"tag":"tag off",sh.rec?"⭐ Recommended":"Not recommended"));if(!sh.active)tg.appendChild(el("span","tag off","Hidden"));top.appendChild(tg);c.appendChild(top);
-  var m=el("div","mini"),a=el("button","btn sec",sh.rec?"Unrecommend":"Recommend"),h=el("button","btn sec",sh.active?"Hide shop":"Show shop"),x=el("button","btn sec dng","Delete"),armed=false;
+  var tg=el("div");tg.style.cssText="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end";tg.appendChild(el("span",sh.rec?"tag":"tag off",sh.rec?"⭐ Recommended":"Not recommended"));if(sh.owned)tg.appendChild(el("span","tag","🏪 Owner"));if(!sh.active)tg.appendChild(el("span",sh.owned?"tag warn":"tag off",sh.owned?"Awaiting approval":"Hidden"));top.appendChild(tg);c.appendChild(top);
+  var m=el("div","mini"),a=el("button","btn sec",sh.rec?"Unrecommend":"Recommend"),h=el("button","btn sec",sh.active?"Hide shop":sh.owned?"Approve shop":"Show shop"),x=el("button","btn sec dng","Delete"),armed=false;
   a.onclick=function(){shopCall("PATCH","/admin/shops/"+sh.id,{rec:!sh.rec})};h.onclick=function(){shopCall("PATCH","/admin/shops/"+sh.id,{active:!sh.active})};
   x.onclick=function(){if(!armed){armed=true;x.textContent="Tap again";setTimeout(function(){armed=false;x.textContent="Delete"},3000);return}shopCall("DELETE","/admin/shops/"+sh.id,null,function(){toast("Shop deleted")})};
   m.appendChild(a);m.appendChild(h);m.appendChild(x);c.appendChild(m);
@@ -300,8 +382,8 @@ $("payM").addEventListener("click",function(e){var b=e.target.closest("button");
 function showTotal(){if(!lastQ)return;var g=goodsSum(),typed=$("it").value.trim().length>1,cs=curShop();countTo(lastQ.total+g);syncPay();
   $("sumLine").textContent=cs&&cs.items.length?"Delivery "+fmt(lastQ.total)+" + Goods "+fmt(g)+(typed?" + typed items (not priced)":""):"Delivery fee only";}
 $("it").addEventListener("input",showTotal);
-function fill(){var f=$("from"),t=$("to"),j=$("jf"),aa=$("a-area");order().forEach(function(c){f.add(new Option(c,c));t.add(new Option(c,c));j.add(new Option(c,c));aa.add(new Option(c,c));$("ns-area").add(new Option(c,c));$("sf").add(new Option(c,c))});
-  j.add(new Option("All areas","all"),0);j.value="all";$("sf").add(new Option("All areas","all"),0);$("sf").value="all";f.value="Mombasa";t.value="Diani";
+function fill(){var f=$("from"),t=$("to"),j=$("jf"),aa=$("a-area");order().forEach(function(c){f.add(new Option(c,c));t.add(new Option(c,c));j.add(new Option(c,c));aa.add(new Option(c,c));$("a-oarea").add(new Option(c,c));$("nbArea").add(new Option(c,c));$("ns-area").add(new Option(c,c));$("sf").add(new Option(c,c))});
+  j.add(new Option("All areas","all"),0);j.value="all";$("sf").add(new Option("All areas","all"),0);$("sf").value="all";f.value="Mombasa";t.value="Diani";try{var la=localStorage.getItem("smd_area");$("nbArea").value=AREAS[la]?la:"Mombasa"}catch(e){$("nbArea").value="Mombasa"}
   WT.forEach(function(w,i){$("wt").add(new Option(w.l,i))});VEHICLES.forEach(function(v){$("a-veh").add(new Option(v,v))});ID_TYPES.forEach(function(v){$("a-idt").add(new Option(v,v));$("v-idt").add(new Option(v,v))});fillShops()}
 var lastTotal=0;
 function countTo(n){var e=$("total"),s=lastTotal,st=performance.now();lastTotal=n;(function step(t){var p=Math.min(1,(t-st)/450);e.textContent=fmt(Math.round(s+(n-s)*p));if(p<1)requestAnimationFrame(step)})(st)}
@@ -386,6 +468,7 @@ function card(x,open,ctx){ /* ctx: s = sender, j = shipper job board, m = shippe
     api("POST","/deliveries/"+encodeURIComponent(x.id)+"/confirm").then(function(j){if(j.needPay){go("hist");renderList(false,x.id);askPay(x,me.phone,"Pay with M-Pesa","Thanks for confirming. We will send a PIN prompt for "+fmt(x.price+x.goods)+" to this number.");return}toast(j.done?"Delivery completed":"Confirmed. Waiting for the shipper to sign off.");renderList(false,x.id)},function(er){toast(er.message);renderList(false,x.id)})});dt.appendChild(g)}
   if(ctx==="s"&&x.step===1&&x.ownOk&&x.payState!=="later")dt.appendChild(el("p","note","You confirmed. Waiting for the shipper to sign off."));
   if(ctx==="s"&&x.step===1&&x.shipOk&&!x.ownOk)dt.appendChild(el("p","note","The shipper says this was delivered. Confirm once you or your recipient has it."));
+  if(ctx==="s"&&x.step===2&&x.shipper){if(x.rating)dt.appendChild(starsRow("You rated this delivery ",x.rating));else dt.appendChild(rateBox(x))}
   dt.appendChild(copyBtn(x.id));
   if(ctx==="s"&&x.step===0){var b3=el("button","btn sec dng","Cancel request"),armed=false;b3.addEventListener("click",function(e){e.stopPropagation();
     if(!armed){armed=true;b3.textContent="Tap again to cancel "+x.id;setTimeout(function(){armed=false;b3.textContent="Cancel request"},4000);return}
@@ -403,12 +486,12 @@ var rlSeq=0;
 function renderList(reset,openId){var q=$("q");if(reset&&!openId)q.value="";var n=++rlSeq;
   return api("GET","/deliveries").then(function(d){if(n!==rlSeq)return;cache.mine=d;drawList(openId)},function(e){toast(e.message)})}
 $("q").addEventListener("input",function(){drawList()});
-function renderJobs(){var a=$("jf").value;return api("GET","/jobs?area="+encodeURIComponent(a)).then(function(d){cache.jobs=d;fillBox($("jlist"),d,"j","No open jobs right now. Check again soon.")},jerr)}
+function renderJobs(){var a=$("jf").value;var rt=me&&me.rating;$("jRate").textContent=rt?(rt.avg==null?"Your rating: none yet · "+rt.done+" delivered":"Your rating: "+starStr(rt.avg)+" "+rt.avg.toFixed(1)+" ("+rt.count+") · "+rt.done+" delivered"):"";return api("GET","/jobs?area="+encodeURIComponent(a)).then(function(d){cache.jobs=d;fillBox($("jlist"),d,"j","No open jobs right now. Check again soon.")},jerr)}
 $("jf").addEventListener("change",renderJobs);
 function renderMine(openId){return api("GET","/jobs/mine").then(function(d){cache.jm=d;fillBox($("mlist"),d,"m","You have no jobs yet. Accept one from Jobs.",openId)},jerr)}
 function jerr(e){if(e.status===403)refreshMe();else toast(e.message)}
 function bump(id,n){var e=$(id),s=+e.textContent,st=performance.now();(function step(t){var p=Math.min(1,(t-st)/500);e.textContent=Math.round(s+(n-s)*p);if(p<1)requestAnimationFrame(step)})(st)}
-function renderHome(){return api("GET","/deliveries").then(function(d){cache.mine=d;
+function renderHome(){loadNear();return api("GET","/deliveries").then(function(d){cache.mine=d;
   bump("s1",d.length);bump("s2",d.filter(function(x){return x.step<2}).length);bump("s3",d.filter(function(x){return x.step===2}).length);
   var r=$("recent");r.textContent="";
   if(!d.length){r.appendChild(el("div","empty","Your deliveries will show up here."));return}
@@ -425,7 +508,7 @@ setInterval(function(){if(!me||document.hidden||busy)return;var v=document.query
 function init(){document.querySelector("header small").textContent=order().join(" \u00b7 ");fill();drawMap($("homeMap"));drawMap($("authMap"));setMode("login");slg();setInterval(tick,3600);loadG();
   api("GET","/me").then(function(j){start(j.user,j.shops)},function(){show("auth")})}
 fetch("/api/config",{credentials:"same-origin"}).then(function(r){return r.json()}).then(function(c){
-  MPESA=!!c.mpesa;FEES=c.FEES||{};DEFER_MIN=c.DEFER_MIN||999;AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
+  MPESA=!!c.mpesa;PUSH=!!c.push;VAPID=c.vapid||"";FEES=c.FEES||{};DEFER_MIN=c.DEFER_MIN||999;AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
   .catch(function(){document.querySelector(".wrap").prepend(el("div","card empty","Cannot reach the SMD server. Please refresh."))});
 /* Admin: delivery fees between places */
 function renderFees(){return api("GET","/admin/fees").then(function(j){drawFees(j.fees)},function(e){toast(e.message)})}

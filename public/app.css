@@ -107,3 +107,13 @@ nav button span{display:block;font-size:20px}nav button.on{color:var(--pri);back
 .paybox{position:fixed;inset:0;background:rgba(14,20,32,.62);display:grid;place-items:center;z-index:20;padding:16px}
 .paybox .card{max-width:360px;width:100%;text-align:center;margin:0}.paybox h3{margin:6px 0 4px;font-size:18px}
 .pbi{font-size:44px;line-height:1}.pbi.spin{animation:pbs 1.2s ease-in-out infinite}@keyframes pbs{50%{transform:scale(1.15)}}
+
+/* footer, near-you lists, ratings, owner dashboard */
+footer.pw{text-align:center;color:var(--mut);font-size:12px;margin:18px 0 4px}footer.pw b{color:var(--tx)}
+b.sub{display:block;margin:14px 0 4px;font-size:13px}
+.nb{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}.nb:last-child{border-bottom:0}
+.nb small{display:block;color:var(--mut);font-size:12px}
+.nb button.lnk{white-space:nowrap}
+.stars{color:#f5a623;letter-spacing:1px;white-space:nowrap}.stars.off{color:var(--line)}
+.rate{display:flex;gap:4px;align-items:center;margin:8px 0}.rate button{border:0;background:none;font-size:30px;line-height:1;color:var(--line);cursor:pointer;padding:2px}.rate button.on{color:#f5a623}
+.tag.warn{background:rgba(245,166,35,.16);color:#b86e00}

@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS catalog_items(id INTEGER PRIMARY KEY, shop_id INTEGER
 CREATE UNIQUE INDEX IF NOT EXISTS ci_uni ON catalog_items(shop_id, name COLLATE NOCASE, unit COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS id_docs(uid INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, kind TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(uid, kind));
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+/* One 1-5 star rating per completed delivery, given by the sender. Plain columns (no foreign keys) so a shipper's rating survives the sender deleting their account. */
+CREATE TABLE IF NOT EXISTS ratings(delivery_id TEXT PRIMARY KEY, shipper INTEGER NOT NULL, owner INTEGER NOT NULL, stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5), created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS r_ship ON ratings(shipper);
+/* Browser push subscriptions of shippers (one row per device) */
+CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, uid INTEGER NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ps_uid ON push_subs(uid);
 /* Admin-set delivery fee for one pair of places (a|b stored in sorted order, so Likoni->Mombasa and Mombasa->Likoni share one fee) */
 CREATE TABLE IF NOT EXISTS fees(a TEXT NOT NULL, b TEXT NOT NULL, fee INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(a,b));
 CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, uid INTEGER NOT NULL, phone TEXT NOT NULL, amount INTEGER NOT NULL,
@@ -68,7 +74,8 @@ async function addCol(table, col, def) {
 /* Accounts that already existed before email verification / shipper approval are grandfathered: email counted as verified, shippers as approved. */
 async function migrate() {
   if (await addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE users SET email_verified=1");
-  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"]]) await addCol("users", c, d);
+  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"], ["is_owner", "INTEGER NOT NULL DEFAULT 0"]]) await addCol("users", c, d);
+  if (await addCol("deliveries", "notified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE deliveries SET notified=1"); /* old jobs are never announced */
   for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"],
     /* pay: 'cod' (pay on delivery) or 'mpesa'. pay_state: 'na' | 'awaiting' (M-Pesa chosen, not yet paid: hidden from the job board) | 'paid' */
     ["pay", "TEXT NOT NULL DEFAULT 'cod'"], ["pay_state", "TEXT NOT NULL DEFAULT 'na'"], ["receipt", "TEXT"]]) await addCol("deliveries", c, d);
@@ -114,6 +121,7 @@ async function initDb() {
   await db.executeMultiple(SCHEMA);
   await migrate();
   await db.executeMultiple(SCHEMA2);
+  await addCol("catalog_shops", "owner_uid", "INTEGER"); /* set when a shop owner runs this shop */
   await seedCatalog();
   await syncAdmins();
   await loadFees();
@@ -168,7 +176,7 @@ async function auth(req, res, next) {
     const t = readCookie(req); req.user = null;
     if (t) {
       const r = await q("SELECT u.* FROM sessions s JOIN users u ON u.id=s.uid WHERE s.th=? AND s.exp>? AND u.email_verified=1").get(sha(t), Date.now());
-      if (r) { if (r.is_admin) r.role = "admin"; req.user = r; }
+      if (r) { if (r.is_admin) r.role = "admin"; else if (r.is_owner) r.role = "owner"; req.user = r; }
     }
     next();
   } catch (e) { next(e); }
@@ -182,10 +190,16 @@ const DOC_KINDS = ["front", "back", "selfie"];
 const docsNeeded = (idType) => (idType === "Passport" ? ["front", "selfie"] : DOC_KINDS); /* a passport has no back side */
 const docsOf = async (uid) => (await q("SELECT kind FROM id_docs WHERE uid=?").all(uid)).map((d) => d.kind);
 async function pub(u) {
-  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.role, veh: u.veh || "", area: u.area || ""};
+  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.is_owner ? "owner" : u.role, veh: u.veh || "", area: u.area || ""};
   if (o.role === "shipper") /* a shipper's own verification state (status: draft -> pending -> approved | rejected) */
     Object.assign(o, {status: u.status, rejectReason: u.reject_reason || "", idType: u.id_type || "", idNumber: u.id_number || "", dob: u.dob || "", address: u.address || "", docs: await docsOf(u.id)});
+  if (o.role === "shipper" && u.status === "approved") o.rating = await stats(u.id);
   return o;
+}
+/* A shipper's work rating: average stars, how many ratings, and how many deliveries finished */
+async function stats(id) {
+  const r = await q("SELECT (SELECT ROUND(AVG(stars),1) FROM ratings WHERE shipper=?) avg, (SELECT COUNT(*) FROM ratings WHERE shipper=?) cnt, (SELECT COUNT(*) FROM deliveries WHERE shipper=? AND step=2) done").get(id, id, id);
+  return {avg: r.avg == null ? null : Number(r.avg), count: Number(r.cnt), done: Number(r.done)};
 }
 const approved = (req, res, next) => (req.user.status === "approved" ? next() : next(new HttpError(403, "Your shipper account is waiting for admin approval.")));
 
@@ -194,7 +208,7 @@ const pin = (s) => (s ? JSON.parse(s) : null);
 function mapD(d, view) { /* view: s = sender (owner), j = open job board, m = shipper's own job */
   const o = {id: d.id, shop: d.shop, from: d.src, to: d.dst, land: d.land, drop: d.drop_, pp: pin(d.pp), dp: pin(d.dp), it: d.item, w: d.w, s: d.spd, price: d.price, goods: d.goods || 0, total: d.price + (d.goods || 0), items: d.items ? JSON.parse(d.items) : [], custom: d.custom || "", step: d.step, at: d.at, shipOk: !!d.ship_ok, ownOk: !!d.own_ok, pay: d.pay, payState: d.pay_state, deferMin: C.DEFER_MIN};
   if (view === "s" || view === "m") { o.receipt = d.receipt || ""; o.laterOk = d.pay_state === "awaiting" && laterOk(d); }
-  if (view === "s") Object.assign(o, {rn: d.rn, rp: d.rp, shipper: d.shipper ? true : "", shipperName: d.sname || "", shipperPhone: d.sphone || "", veh: d.veh || ""});
+  if (view === "s") { o.rating = Number(d.rstars) || 0; Object.assign(o, {rn: d.rn, rp: d.rp, shipper: d.shipper ? true : "", shipperName: d.sname || "", shipperPhone: d.sphone || "", veh: d.veh || ""}); }
   if (view === "m") Object.assign(o, {rn: d.rn, rp: d.rp, sn: d.oname, sp: d.ophone, shipper: true});
   if (view === "j") Object.assign(o, {drop: "", dp: null}); /* exact drop-off is revealed only to the shipper who accepts */
   return o; /* the job board never exposes sender or recipient identity */
@@ -265,6 +279,35 @@ async function issueEmailCode(u) {
 }
 const notifyAdmins = (subject, text) => ADMINS.forEach((to) => sendMail({to, kind: "admin", subject, text}));
 
+/* ---------- Push notifications for shippers (Web Push) ----------
+   Needs VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY (make them with: npm run vapid). Without them the app still works; shippers just get no phone alerts.
+   A shipper is alerted about a NEW job when: approved, has a live login session, has allowed notifications on a device, and is based within NOTIFY_KM of the pickup area.
+   The alert carries only the route and fee: never the sender's or the recipient's details. PUSH_DRY_RUN=1 logs instead of sending (tests). */
+let webpush = null;
+const DRY_PUSH = process.env.PUSH_DRY_RUN === "1";
+if ((process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) || DRY_PUSH) {
+  try {
+    webpush = require("web-push");
+    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) webpush.setVapidDetails("mailto:" + (process.env.SUPPORT_EMAIL || ADMINS[0] || "admin@example.com"), process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+  } catch (e) { console.error("Push notifications are off:", e.message); webpush = null; }
+}
+const NOTIFY_KM = +process.env.NOTIFY_KM || 10;
+async function announceJob(id) { /* call after a job becomes visible on the board; safe to call twice */
+  try {
+    const r = await q("UPDATE deliveries SET notified=1 WHERE id=? AND notified=0 AND step=0 AND shipper IS NULL AND pay_state<>'awaiting'").run(id);
+    if (!r.changes || !webpush) return;
+    const d = await q("SELECT src,dst,price,goods FROM deliveries WHERE id=?").get(id); if (!d) return;
+    const subs = await q("SELECT s.*, u.area FROM push_subs s JOIN users u ON u.id=s.uid WHERE u.role='shipper' AND u.status='approved' AND u.email_verified=1 AND EXISTS (SELECT 1 FROM sessions x WHERE x.uid=u.id AND x.exp>?)").all(Date.now());
+    const near = subs.filter((x) => x.area && Object.hasOwn(C.AREAS, x.area) && Math.abs(C.AREAS[x.area].pos - C.AREAS[d.src].pos) <= NOTIFY_KM);
+    const payload = JSON.stringify({title: "New delivery job", body: d.src + " → " + d.dst + " · fee " + d.price + " KES", tag: "smd-job", url: "/"});
+    for (const sub of near) {
+      if (DRY_PUSH) { console.log("[push] to user " + sub.uid + ": " + d.src + " -> " + d.dst); continue; }
+      try { await webpush.sendNotification({endpoint: sub.endpoint, keys: {p256dh: sub.p256dh, auth: sub.auth}}, payload, {TTL: 3600, urgency: "high"}); }
+      catch (e) { if (e.statusCode === 404 || e.statusCode === 410) await q("DELETE FROM push_subs WHERE endpoint=?").run(sub.endpoint); else console.error("push failed:", e.statusCode || e.message); }
+    }
+  } catch (e) { console.error("announceJob:", e.message); }
+}
+
 /* ---------- App ---------- */
 const app = express();
 if (process.env.TRUST_PROXY) app.set("trust proxy", +process.env.TRUST_PROXY || process.env.TRUST_PROXY);
@@ -317,7 +360,7 @@ api.use(auth);
 const authLimit = rateLimit({windowMs: 60000, limit: +process.env.AUTH_RATE_LIMIT || 20, standardHeaders: true, legacyHeaders: false, message: {error: "Too many attempts. Please wait a minute."}});
 const wrap = (f) => (req, res, next) => Promise.resolve(f(req, res)).catch(next);
 
-api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID, mpesa: M.enabled(), FEES, DEFER_MIN: C.DEFER_MIN}));
+api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID, mpesa: M.enabled(), FEES, DEFER_MIN: C.DEFER_MIN, push: !!webpush && !!process.env.VAPID_PUBLIC_KEY, vapid: process.env.VAPID_PUBLIC_KEY || ""}));
 
 /* Shipper identification details (validated on the server; the ID number is normalised so one ID cannot back two accounts) */
 function idIn(b) {
@@ -334,15 +377,25 @@ function idIn(b) {
 const idTaken = (e) => /id_number/.test(String(e && e.message));
 
 /* Removes an account that never proved its email. Dependents are deleted explicitly so this is correct even if the database does not enforce cascades. */
+async function dropOwnerShop(uid) {
+  await q("DELETE FROM catalog_items WHERE shop_id IN (SELECT id FROM catalog_shops WHERE owner_uid=?)").run(uid);
+  await q("DELETE FROM catalog_shops WHERE owner_uid=?").run(uid);
+}
 async function dropUnverified(id) {
-  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(id);
+  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(id);
+  await dropOwnerShop(id);
   await q("DELETE FROM deliveries WHERE owner=?").run(id);
   await q("DELETE FROM users WHERE id=?").run(id);
 }
 async function newUser(b, email, pw, google) {
-  const role = b.role === "shipper" ? "shipper" : b.role === "sender" ? "sender" : bad("Choose an account type.");
+  const owner = b.role === "owner"; /* a shop owner is stored as a 'sender' row with is_owner=1 (the role column only allows sender/shipper) */
+  const role = b.role === "shipper" ? "shipper" : (b.role === "sender" || owner) ? "sender" : bad("Choose an account type.");
   const name = str(b.name, 2, 60, "Full name"); if (!phoneOk(b.phone)) bad("Enter a valid phone, e.g. 0712 345 678.");
-  let veh = null, area = null, id = {}, status = "approved";
+  let veh = null, area = null, id = {}, status = "approved", shopName = null;
+  if (owner) {
+    shopName = str(b.shopName, 2, 60, "Shop name"); if (!Object.hasOwn(C.AREAS, b.area)) bad("Choose the area your shop is in."); area = b.area;
+    if (await q("SELECT 1 x FROM catalog_shops WHERE area=? AND name=? COLLATE NOCASE").get(area, shopName)) bad("A shop with that name already exists in this area.", 409);
+  }
   if (role === "shipper") { /* shippers start as "draft" and must be approved by an admin before they can see any job */
     if (!C.VEHICLES.includes(b.veh) || !Object.hasOwn(C.AREAS, b.area)) bad("Choose a vehicle and base area.");
     veh = b.veh; area = b.area; id = idIn(b); status = "draft";
@@ -354,9 +407,15 @@ async function newUser(b, email, pw, google) {
     await dropUnverified(ex.id);
   }
   try {
-    return Number((await q("INSERT INTO users(email,name,phone,role,veh,area,pw,google,created,email_verified,status,id_type,id_number,dob,address) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run(email, name, b.phone.trim(), role, veh, area, pw, google ? 1 : 0, Date.now(), google ? 1 : 0, status, id.idType || null, id.idNumber || null, id.dob || null, id.address || null)).lastInsertRowid);
+    const uid = Number((await q("INSERT INTO users(email,name,phone,role,veh,area,pw,google,created,email_verified,status,id_type,id_number,dob,address,is_owner) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run(email, name, b.phone.trim(), role, veh, area, pw, google ? 1 : 0, Date.now(), google ? 1 : 0, status, id.idType || null, id.idNumber || null, id.dob || null, id.address || null, owner ? 1 : 0)).lastInsertRowid);
+    if (owner) { /* the shop stays hidden from customers until an admin approves it (Shops tab) */
+      try { await q("INSERT INTO catalog_shops(area,name,recommended,active,created,owner_uid) VALUES(?,?,0,0,?,?)").run(area, shopName, Date.now(), uid); }
+      catch (e) { await q("DELETE FROM users WHERE id=?").run(uid); bad("A shop with that name already exists in this area.", 409); }
+    }
+    return uid;
   } catch (e) {
+    if (e instanceof HttpError) throw e;
     if (idTaken(e)) bad("That ID number is already registered to another account. Contact support if this is a mistake.", 409);
     bad("An account with this email already exists. Log in instead.", 409);
   }
@@ -460,7 +519,8 @@ api.post("/me/delete", need(), wrap(async (req, res) => {
   const busy = (await q("SELECT COUNT(*) c FROM deliveries WHERE (owner=? AND (step=1 OR (step=0 AND pay_state='paid'))) OR (shipper=? AND step=1)").get(u.id, u.id)).c
     || (await q("SELECT COUNT(*) c FROM payments WHERE uid=? AND status IN ('initiating','pending')").get(u.id)).c;
   if (busy) bad("You still have a delivery in progress or a paid request that is not complete. Finish or cancel it first, then delete your account.", 409);
-  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(u.id);
+  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(u.id);
+  await dropOwnerShop(u.id); await q("DELETE FROM ratings WHERE shipper=?").run(u.id);
   await q("DELETE FROM deliveries WHERE owner=?").run(u.id);
   await q("UPDATE deliveries SET shipper=NULL, sname='Deleted user', sphone='', veh=NULL WHERE shipper=?").run(u.id); /* completed jobs stay on the sender's record without the shipper's identity */
   await q("DELETE FROM users WHERE id=?").run(u.id);
@@ -532,9 +592,9 @@ api.post("/admin/shippers/:id/reject", adminOnly, wrap((req, res) => decide(req,
 
 /* Shop catalog: recommended shops first, each with its per-unit price list */
 async function catalog(all) {
-  const shops = await q("SELECT * FROM catalog_shops" + (all ? "" : " WHERE active=1") + " ORDER BY recommended DESC, name COLLATE NOCASE").all();
+  const shops = await q("SELECT * FROM catalog_shops" + (all ? "" : " WHERE active=1") + " ORDER BY (owner_uid IS NOT NULL AND active=0) DESC, recommended DESC, name COLLATE NOCASE").all();
   const items = await q("SELECT * FROM catalog_items" + (all ? "" : " WHERE active=1") + " ORDER BY name COLLATE NOCASE, unit").all();
-  return shops.map((s) => ({id: s.id, area: s.area, name: s.name, rec: !!s.recommended, active: !!s.active,
+  return shops.map((s) => ({id: s.id, area: s.area, name: s.name, rec: !!s.recommended, active: !!s.active, owned: s.owner_uid != null,
     items: items.filter((i) => i.shop_id === s.id).map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}));
 }
 api.get("/shops", need("sender"), wrap(async (req, res) => res.json(await catalog(false))));
@@ -557,26 +617,83 @@ api.delete("/admin/shops/:id", need("admin"), wrap(async (req, res) => { /* past
   const id = idp(req.params.id); await q("DELETE FROM catalog_items WHERE shop_id=?").run(id); /* explicit, so it never depends on cascade support */
   if (!(await q("DELETE FROM catalog_shops WHERE id=?").run(id)).changes) bad("Not found.", 404); res.json({ok: true});
 }));
-api.post("/admin/shops/:id/items", need("admin"), wrap(async (req, res) => {
-  const sid = idp(req.params.id); if (!(await q("SELECT id FROM catalog_shops WHERE id=?").get(sid))) bad("Not found.", 404);
-  const b = req.body, name = str(b.name, 2, 60, "Item name"), unit = str(b.unit, 1, 20, "Unit"), price = priceIn(b.price);
+/* Goods of a shop: the same rules for the admin (any shop) and for a shop owner (their own shop only) */
+async function addItem(sid, b) {
+  const name = str(b.name, 2, 60, "Item name"), unit = str(b.unit, 1, 20, "Unit"), price = priceIn(b.price);
   if ((await q("SELECT COUNT(*) c FROM catalog_items WHERE shop_id=?").get(sid)).c >= 300) bad("That shop already has the maximum number of goods.", 429);
-  try { res.status(201).json({id: Number((await q("INSERT INTO catalog_items(shop_id,name,unit,price,active) VALUES(?,?,?,?,1)").run(sid, name, unit, price)).lastInsertRowid)}); }
+  try { return Number((await q("INSERT INTO catalog_items(shop_id,name,unit,price,active) VALUES(?,?,?,?,1)").run(sid, name, unit, price)).lastInsertRowid); }
   catch (e) { if (/UNIQUE/.test(String(e.message))) bad("That item (with the same unit) is already on this shop's list.", 409); throw e; }
-}));
-api.patch("/admin/items/:id", need("admin"), wrap(async (req, res) => {
-  const id = idp(req.params.id), it = await q("SELECT * FROM catalog_items WHERE id=?").get(id); if (!it) bad("Not found.", 404); const b = req.body;
+}
+async function editItem(id, b, ownerUid) {
+  const it = await q("SELECT i.* FROM catalog_items i JOIN catalog_shops s ON s.id=i.shop_id WHERE i.id=?" + (ownerUid ? " AND s.owner_uid=?" : "")).get(...(ownerUid ? [id, ownerUid] : [id])); if (!it) bad("Not found.", 404);
   const name = b.name !== undefined ? str(b.name, 2, 60, "Item name") : it.name, unit = b.unit !== undefined ? str(b.unit, 1, 20, "Unit") : it.unit, price = b.price !== undefined ? priceIn(b.price) : it.price;
   try { await q("UPDATE catalog_items SET name=?, unit=?, price=?, active=? WHERE id=?").run(name, unit, price, b.active === undefined ? it.active : b.active ? 1 : 0, id); }
   catch (e) { if (/UNIQUE/.test(String(e.message))) bad("That item (with the same unit) is already on this shop's list.", 409); throw e; }
+}
+async function removeItem(id, ownerUid) {
+  const ok = await q("SELECT i.id FROM catalog_items i JOIN catalog_shops s ON s.id=i.shop_id WHERE i.id=?" + (ownerUid ? " AND s.owner_uid=?" : "")).get(...(ownerUid ? [id, ownerUid] : [id]));
+  if (!ok) bad("Not found.", 404); await q("DELETE FROM catalog_items WHERE id=?").run(id);
+}
+api.post("/admin/shops/:id/items", need("admin"), wrap(async (req, res) => {
+  const sid = idp(req.params.id); if (!(await q("SELECT id FROM catalog_shops WHERE id=?").get(sid))) bad("Not found.", 404);
+  res.status(201).json({id: await addItem(sid, req.body)});
+}));
+api.patch("/admin/items/:id", need("admin"), wrap(async (req, res) => { await editItem(idp(req.params.id), req.body); res.json({ok: true}); }));
+api.delete("/admin/items/:id", need("admin"), wrap(async (req, res) => { await removeItem(idp(req.params.id)); res.json({ok: true}); }));
+
+/* Shop owner dashboard: one shop per owner, goods only (the admin approves the shop and decides if it is recommended) */
+const myShop = async (req) => (await q("SELECT * FROM catalog_shops WHERE owner_uid=?").get(req.user.id)) || bad("No shop is linked to your account.", 404);
+async function ownerView(sh) {
+  const items = await q("SELECT * FROM catalog_items WHERE shop_id=? ORDER BY name COLLATE NOCASE, unit").all(sh.id);
+  return {shop: {id: sh.id, name: sh.name, area: sh.area, approved: !!sh.active, rec: !!sh.recommended, items: items.map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}};
+}
+api.get("/owner/shop", need("owner"), wrap(async (req, res) => res.json(await ownerView(await myShop(req)))));
+api.patch("/owner/shop", need("owner"), wrap(async (req, res) => {
+  const sh = await myShop(req), name = str(req.body.name, 2, 60, "Shop name");
+  try { await q("UPDATE catalog_shops SET name=? WHERE id=?").run(name, sh.id); } catch (e) { dupShop(e); }
+  res.json(await ownerView(await myShop(req)));
+}));
+api.post("/owner/items", need("owner"), wrap(async (req, res) => { const sh = await myShop(req); await addItem(sh.id, req.body); res.status(201).json(await ownerView(sh)); }));
+api.patch("/owner/items/:id", need("owner"), wrap(async (req, res) => { await editItem(idp(req.params.id), req.body, req.user.id); res.json(await ownerView(await myShop(req))); }));
+api.delete("/owner/items/:id", need("owner"), wrap(async (req, res) => { await removeItem(idp(req.params.id), req.user.id); res.json(await ownerView(await myShop(req))); }));
+
+api.post("/push/subscribe", need("shipper"), approved, wrap(async (req, res) => {
+  const b = req.body, k = b && b.keys;
+  if (!webpush) bad("Notifications are not switched on for this server.", 501);
+  if (typeof b.endpoint !== "string" || !/^https:\/\/[^\s]{10,480}$/.test(b.endpoint) || !k || typeof k.p256dh !== "string" || typeof k.auth !== "string" || k.p256dh.length > 200 || k.auth.length > 100) bad("That notification setup is not valid.");
+  await q("INSERT INTO push_subs(endpoint,uid,p256dh,auth,created) VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET uid=excluded.uid,p256dh=excluded.p256dh,auth=excluded.auth").run(b.endpoint, req.user.id, k.p256dh, k.auth, Date.now());
+  await q("DELETE FROM push_subs WHERE uid=? AND endpoint NOT IN (SELECT endpoint FROM push_subs WHERE uid=? ORDER BY created DESC LIMIT 5)").run(req.user.id, req.user.id); /* at most 5 devices */
+  res.status(201).json({ok: true});
+}));
+api.post("/push/unsubscribe", need(), wrap(async (req, res) => {
+  if (typeof req.body.endpoint === "string") await q("DELETE FROM push_subs WHERE endpoint=? AND uid=?").run(req.body.endpoint, req.user.id);
   res.json({ok: true});
 }));
-api.delete("/admin/items/:id", need("admin"), wrap(async (req, res) => {
-  if (!(await q("DELETE FROM catalog_items WHERE id=?").run(idp(req.params.id))).changes) bad("Not found.", 404); res.json({ok: true});
+
+/* Near you (senders): shops the admin recommends in an area, and the approved shippers based there with their work rating */
+const shortName = (n) => { const p = String(n).trim().split(/\s+/); return p.length > 1 ? p[0] + " " + p[p.length - 1][0] + "." : p[0]; };
+api.get("/nearby", need("sender"), wrap(async (req, res) => {
+  const a = String(req.query.area || ""); if (!Object.hasOwn(C.AREAS, a)) bad("Choose an area.");
+  const shops = await q("SELECT s.id, s.name, (SELECT COUNT(*) FROM catalog_items i WHERE i.shop_id=s.id AND i.active=1) goods FROM catalog_shops s WHERE s.area=? AND s.active=1 AND s.recommended=1 ORDER BY s.name COLLATE NOCASE LIMIT 12").all(a);
+  const rows = await q("SELECT id, name, veh FROM users WHERE role='shipper' AND status='approved' AND area=? AND email_verified=1").all(a), out = [];
+  for (const r of rows) {
+    if ((await q("SELECT COUNT(*) c FROM deliveries WHERE shipper=? AND step=1").get(r.id)).c >= 10) continue; /* fully booked: not available */
+    out.push({name: shortName(r.name), veh: r.veh || "", ...(await stats(r.id))});
+  }
+  out.sort((x, y) => (y.avg || 0) - (x.avg || 0) || y.done - x.done);
+  res.json({area: a, shops: shops.map((s) => ({id: s.id, name: s.name, goods: Number(s.goods)})), shippers: out.slice(0, 10)});
+}));
+api.post("/deliveries/:id/rate", need("sender"), wrap(async (req, res) => {
+  const stars = req.body.stars; if (!Number.isInteger(stars) || stars < 1 || stars > 5) bad("Choose 1 to 5 stars.");
+  const d = await q("SELECT shipper FROM deliveries WHERE id=? AND owner=? AND step=2").get(String(req.params.id), req.user.id);
+  if (!d || !d.shipper) bad("You can rate a delivery once it is completed.", 409);
+  try { await q("INSERT INTO ratings(delivery_id,shipper,owner,stars,created) VALUES(?,?,?,?,?)").run(String(req.params.id), d.shipper, req.user.id, stars, Date.now()); }
+  catch (e) { if (/UNIQUE|PRIMARY/i.test(String(e.message))) bad("You already rated this delivery.", 409); throw e; }
+  res.json({ok: true, rating: stars});
 }));
 
 /* Sender */
-api.get("/deliveries", need("sender"), wrap(async (req, res) => res.json((await q("SELECT * FROM deliveries WHERE owner=? ORDER BY at DESC").all(req.user.id)).map((d) => mapD(d, "s")))));
+api.get("/deliveries", need("sender"), wrap(async (req, res) => res.json((await q("SELECT d.*, r.stars rstars FROM deliveries d LEFT JOIN ratings r ON r.delivery_id=d.id WHERE d.owner=? ORDER BY d.at DESC").all(req.user.id)).map((d) => mapD(d, "s")))));
 api.post("/deliveries", need("sender"), wrap(async (req, res) => {
   const b = req.body;
   if (!Object.hasOwn(C.AREAS, b.from) || !Object.hasOwn(C.AREAS, b.to)) bad("Choose valid areas.");
@@ -627,6 +744,7 @@ api.post("/deliveries", need("sender"), wrap(async (req, res) => {
     catch (e) { id = null; }
   }
   if (!id) bad("Could not create request. Try again.", 500);
+  announceJob(id); /* not awaited: alerts shippers when the job is already on the board (unpaid M-Pesa orders are announced once paid) */
   res.status(201).json(mapD(await q("SELECT * FROM deliveries WHERE id=?").get(id), "s"));
 }));
 api.delete("/deliveries/:id", need("sender"), wrap(async (req, res) => {
@@ -692,7 +810,7 @@ async function settle(p, r) { /* r = {code, desc, amount?, receipt?} */
     if (!d) st = "orphan"; /* order was deleted while the prompt was open: needs a refund */
     else if (d.pay_state === "paid") st = "duplicate"; /* customer paid twice: needs a refund */
     await q("UPDATE payments SET status=?, result_code=0, result_desc=?, receipt=?, updated=? WHERE id=?").run(st, r.desc || "OK", r.receipt || null, now, p.id);
-    if (st === "success") { await q("UPDATE deliveries SET pay_state='paid', pay='mpesa', receipt=? WHERE id=?").run(r.receipt || null, p.delivery_id); await finalize(p.delivery_id); }
+    if (st === "success") { await q("UPDATE deliveries SET pay_state='paid', pay='mpesa', receipt=? WHERE id=?").run(r.receipt || null, p.delivery_id); await finalize(p.delivery_id); announceJob(p.delivery_id); }
     else console.error("[mpesa] REFUND NEEDED (" + st + ") payment", p.id, "order", p.delivery_id, "amount", p.amount, "receipt", r.receipt);
     return st;
   }
@@ -761,6 +879,7 @@ api.post("/deliveries/:id/later", need("sender"), wrap(async (req, res) => {
   if (await q("SELECT 1 x FROM payments WHERE delivery_id=? AND status IN ('initiating','pending')").get(d.id)) bad("An M-Pesa payment is still in progress. Wait a minute, then try again.", 409);
   const r = await q("UPDATE deliveries SET pay='later', pay_state='later' WHERE id=? AND owner=? AND step=0 AND pay_state='awaiting'").run(d.id, req.user.id);
   if (!r.changes) bad("This request cannot be switched to pay after delivery.", 409);
+  announceJob(d.id);
   res.json(mapD(await q("SELECT * FROM deliveries WHERE id=?").get(d.id), "s"));
 }));
 

@@ -94,3 +94,8 @@ Set the `MPESA_*` variables from `.env.example` (in Render → Environment). Unt
 ### Delivery fees and pay-after-delivery
 - **Fees:** the admin sets the fee for any pair of places in the Fees tab. A fee set there replaces the automatic one (ferry included); weight surcharge and express extra still apply on top. "Use automatic" removes it.
 - **Pay after delivery:** with M-Pesa configured, every order is paid through M-Pesa. Orders from listed shops with goods above `DEFER_MIN_GOODS` (default 999) can be paid after delivery: the request goes to shippers at once, and the sender pays by STK Push after confirming receipt. Such an order is Completed only when the shipper has signed off, the sender has confirmed, and the payment has arrived. Without M-Pesa configured the app stays cash on delivery.
+
+## Shop owners, ratings, job alerts
+- **Shop owners** sign up as "Shop owner" (shop name + area). They manage their goods under *My shop*. Their shop stays hidden until an admin approves it in the Shops tab (button "Approve shop"); the admin can still edit those goods and decides if the shop is recommended.
+- **Near you** (sender home): recommended shops in the chosen area and available shippers with their star rating. Senders rate a shipper (1-5 stars) once, after a delivery is completed.
+- **Job alerts**: shippers turn on *Job alerts* in Settings. Needs `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (run `npm run vapid`). Works in Chrome / the installed web app on Android; not inside the Android WebView app. Alerts go only to logged-in, approved shippers based near the pickup area.

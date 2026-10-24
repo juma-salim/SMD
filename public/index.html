@@ -21,9 +21,11 @@
   <div class="card hero"><h2 id="aT">Welcome back</h2><p id="aS">Log in to send and track deliveries.</p>
     <div class="slg" data-slg></div><svg id="authMap" viewBox="0 0 320 210" width="100%" role="img" aria-label="Map of SMD service areas"></svg></div>
   <div class="card">
-    <div id="g-role"><label>I am a</label><div class="seg" id="roleSeg"><button type="button" data-r="sender" class="on">📦 Sender</button><button type="button" data-r="shipper">🏍️ Shipper</button></div><p class="note" id="roleNote"></p></div>
+    <div id="g-role"><label>I am a</label><div class="seg three" id="roleSeg"><button type="button" data-r="sender" class="on">📦 Sender</button><button type="button" data-r="shipper">🏍️ Shipper</button><button type="button" data-r="owner">🏪 Shop owner</button></div><p class="note" id="roleNote"></p></div>
     <div id="g-name"><label for="a-name">Full name</label><input id="a-name" maxlength="60" autocomplete="name"></div>
     <div id="g-phone"><label for="a-phone">Phone</label><input id="a-phone" type="tel" inputmode="tel" placeholder="0712 345 678" autocomplete="tel"></div>
+    <div id="g-owner" style="display:none"><div class="row"><div><label for="a-shop">Shop name</label><input id="a-shop" maxlength="60" autocomplete="organization"></div><div><label for="a-oarea">Shop area</label><select id="a-oarea"></select></div></div>
+      <p class="note">After you confirm your email you can list your goods. An admin approves your shop before customers see it.</p></div>
     <div id="g-ship" style="display:none"><div class="row"><div><label for="a-veh">Vehicle</label><select id="a-veh"></select></div><div><label for="a-area">Base area</label><select id="a-area"></select></div></div>
       <label for="a-idt">ID type</label><select id="a-idt"></select>
       <label for="a-idn">ID number</label><input id="a-idn" maxlength="20" autocapitalize="characters" autocomplete="off">
@@ -49,6 +51,10 @@
     <div class="card stat"><b id="s2">0</b><span>Active</span></div>
     <div class="card stat"><b id="s3">0</b><span>Completed</span></div>
   </div>
+  <div class="card" id="nearCard"><b>Near you</b>
+    <label for="nbArea">Your area</label><select id="nbArea"></select>
+    <b class="sub">⭐ Recommended shops</b><div id="nbShops"></div>
+    <b class="sub">🏍️ Shippers available</b><div id="nbShips"></div></div>
   <div class="card"><b>Recent</b><div id="recent" style="margin-top:8px"></div></div>
 </section>
 
@@ -101,7 +107,7 @@
 </section>
 
 <section id="v-jobs" class="view">
-  <div class="card hero"><h2 id="hj">Hi!</h2><p>Accept a job, collect, deliver, get paid on delivery.</p><div class="slg" data-slg></div></div>
+  <div class="card hero"><h2 id="hj">Hi!</h2><p>Accept a job, collect, deliver, get paid on delivery.</p><p id="jRate" style="font-size:13px"></p><div class="slg" data-slg></div></div>
   <div class="card"><label for="jf" style="margin-top:0">Pickup area</label><select id="jf"></select></div>
   <div id="jlist"></div>
 </section>
@@ -144,6 +150,15 @@
   <div id="slist"></div>
 </section>
 
+<section id="v-owner" class="view">
+  <div class="card hero"><h2 id="oT">My shop</h2><p id="oS">Add the goods you sell and their prices. Customers order them through the app.</p></div>
+  <div class="card"><div id="oState"></div>
+    <label for="o-name">Shop name</label><input id="o-name" maxlength="60"><button class="btn sec" id="o-save">Save name</button>
+    <div class="err" id="oErr" role="alert"></div></div>
+  <div class="card"><b>Add a good</b><div id="oAdd"></div></div>
+  <div id="oList"></div>
+</section>
+
 <section id="v-set" class="view">
   <div class="card"><b>Profile</b>
     <label for="p-role">Account type</label><input id="p-role" readonly>
@@ -152,6 +167,7 @@
     <label for="p-email">Email</label><input id="p-email" readonly>
     <div class="err" id="pErr" role="alert"></div>
     <button class="btn" id="pSave">Save changes</button></div>
+  <div class="card" id="pushCard" style="display:none"><b>Job alerts</b><p class="note" id="pushNote">Get a phone alert when a new delivery appears near you, even when the app is closed. You must stay logged in.</p><button class="btn" id="pushBtn">Turn on job alerts</button></div>
   <div class="card"><b>Payment</b><p class="note">Pay with M-Pesa when you request a delivery: you get a PIN prompt on your phone. For goods above KES 999 from our listed shops you can pay after your goods arrive.</p></div>
   <div class="card"><b>About</b><div><button class="btn sec installBtn" type="button" style="display:none;margin-top:6px">📲 Install the SMD app</button><p class="note iosHint" style="display:none">On iPhone: tap the Share button, then “Add to Home Screen”.</p></div><p class="note"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> · <a href="/delete-account" target="_blank" rel="noopener">Delete account help</a></p></div>
   <div class="card"><button class="btn sec dng" id="out" style="margin-top:0">Log out</button></div>
@@ -162,6 +178,7 @@
       <div class="err" id="delErr" role="alert"></div>
       <button class="btn sec dng" id="delGo">Delete my account for good</button></div></div>
 </section>
+<footer class="pw">Powered by <b>Kayafrica</b></footer>
 </div>
 
 <nav id="nav"><div>
@@ -171,6 +188,7 @@
   <button data-go="jobs" data-r="shipper"><span>📋</span>Jobs</button>
   <button data-go="mine" data-r="shipper"><span>🏍️</span>My jobs</button>
   <button data-go="verify" data-r="shipper"><span>🪪</span>Verify</button>
+  <button data-go="owner" data-r="owner"><span>🏪</span>My shop</button>
   <button data-go="admin" data-r="admin"><span>🛡️</span>Review</button>
   <button data-go="shops" data-r="admin"><span>🏪</span>Shops</button>
   <button data-go="fees" data-r="admin"><span>💰</span>Fees</button>
