@@ -20,7 +20,7 @@ class Agent {
 }
 const cookieOn = (a) => !!a.cookie;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const sig = (e, extra) => Object.assign({name: "Test User", phone: "0712 345 678", email: e, password: "correct-horse-9", role: "sender"}, extra);
+const sig = (e, extra) => Object.assign({name: "Test User", phone: "0712 345 678", email: e, password: "correct-horse-9", role: "sender", consent: true, idConsent: true}, extra);
 /* Helpers for the verification flow: codes are read from the dev log, exactly as an emailed code would be typed in */
 const codeFor = async (email, kind = "verification") => { await sleep(120); const all = [...out.join("").matchAll(new RegExp(kind + " code for " + email.replace(/\./g, "\\.") + ": ([A-Z0-9]+)", "g"))]; return all.length ? all[all.length - 1][1] : null; };
 const register = async (agent, body) => { const r = await agent.call("POST", "/api/auth/signup", body); if (r.s !== 201) return r; return agent.call("POST", "/api/auth/verify", {email: body.email, code: await codeFor(body.email)}); };

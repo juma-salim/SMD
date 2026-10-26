@@ -120,3 +120,7 @@ b.sub{display:block;margin:14px 0 4px;font-size:13px}
 
 .chk{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}.chk label{display:inline-flex;align-items:center;gap:6px;margin:0;padding:8px 12px;border:1.5px solid var(--line);border-radius:20px;font-size:13px;color:var(--tx);cursor:pointer}
 .chk input{width:auto;margin:0}.chk label.on{border-color:var(--pri);background:rgba(255,107,0,.1)}
+
+label.agree{display:flex;gap:10px;align-items:flex-start;font-size:13px;font-weight:400;color:var(--tx);margin:12px 0 0;line-height:1.4;cursor:pointer}
+label.agree input{width:20px;height:20px;flex:none;margin:1px 0 0;accent-color:var(--pri)}
+footer.pw a{color:var(--mut)}

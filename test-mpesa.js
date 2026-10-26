@@ -43,7 +43,7 @@ class Agent {
 }
 const codeFor = async (email) => { await sleep(150); const all = [...out.join("").matchAll(new RegExp("verification code for " + email.replace(/\./g, "\\.") + ": ([0-9]+)", "g"))]; return all.length ? all[all.length - 1][1] : null; };
 async function register(extra) {
-  const a = new Agent(), email = extra.email, s = await a.call("POST", "/api/auth/signup", Object.assign({name: "Test User", phone: "0712 345 678", password: "correct-horse-9", role: "sender"}, extra));
+  const a = new Agent(), email = extra.email, s = await a.call("POST", "/api/auth/signup", Object.assign({name: "Test User", phone: "0712 345 678", password: "correct-horse-9", role: "sender", consent: true, idConsent: true}, extra));
   if (s.s !== 201) throw new Error("signup failed " + JSON.stringify(s.j));
   const v = await a.call("POST", "/api/auth/verify", {email, code: await codeFor(email)}); if (v.s !== 200) throw new Error("verify failed");
   return a;

@@ -19,10 +19,10 @@ function api(method,path,body){
   var opt={method:method,credentials:"same-origin",headers:{}};
   if(method!=="GET"){opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body||{})}
   return fetch("/api"+path,opt).then(function(r){return r.json().catch(function(){return{}}).then(function(j){
-    if(!r.ok){var e=new Error(j.error||"Request failed.");e.status=r.status;e.data=j;if(r.status===401&&me&&path.indexOf("/auth/")!==0)sessionEnded();throw e}return j})},
+    if(!r.ok){var e=new Error(j.error||"Request failed.");e.status=r.status;e.data=j;if(j.needConsent)showConsent();if(r.status===401&&me&&path.indexOf("/auth/")!==0)sessionEnded();throw e}return j})},
     function(){throw new Error("Cannot reach the server. Check your connection.")})}
 function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
-function resetLocal(){me=null;seenJobs=null;myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
+function resetLocal(){me=null;seenJobs=null;$("a-agree").checked=false;$("a-idc").checked=false;$("consentBox").style.display="none";myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
   ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
   pins.pick=null;pins.drop=null;setRole("sender");setMode("login");show("auth")}
 
@@ -93,7 +93,7 @@ document.addEventListener("click",function(e){var g=e.target.closest("[data-go]"
 
 /* Auth */
 function setRole(r){role=r;document.querySelectorAll("#roleSeg button").forEach(function(b){b.classList.toggle("on",b.dataset.r===r)});
-  var su=mode==="signup"||mode==="gsetup";$("g-ship").style.display=(su&&r==="shipper")?"block":"none";$("g-owner").style.display=(su&&r==="owner")?"block":"none";
+  var su=mode==="signup"||mode==="gsetup";$("g-ship").style.display=(su&&r==="shipper")?"block":"none";$("g-owner").style.display=(su&&r==="owner")?"block":"none";$("g-consent").style.display=su?"block":"none";$("g-idc").style.display=(su&&r==="shipper")?"flex":"none";
   $("roleNote").textContent=r==="sender"?"Request deliveries from local shops.":r==="owner"?"Sell through SMD: list your goods and their prices.":"Accept delivery jobs and get paid on delivery."}
 function setMode(m){mode=m;$("aErr").textContent="";
   var T={login:["Welcome back","Log in to continue.","Log in","New here? Sign up"],signup:["Create account","Choose your account type to begin.","Sign up","Have an account? Log in"],
@@ -118,7 +118,8 @@ function resendCode(){var em=$("a-email").value.trim().toLowerCase();if(Date.now
 $("a-pw").addEventListener("keydown",function(e){if(e.key==="Enter")$("aBtn").click()});
 function aerr(m){$("aErr").textContent=m;busy=false;$("aBtn").disabled=false}
 function work(){busy=true;$("aBtn").disabled=true}
-function shipFields(b){if(role==="owner"){b.shopName=$("a-shop").value.trim();b.area=$("a-oarea").value}if(role==="shipper"){b.veh=$("a-veh").value;b.area=$("a-area").value;b.idType=$("a-idt").value;b.idNumber=$("a-idn").value.trim();b.dob=$("a-dob").value;b.address=$("a-addr").value.trim()}return b}
+function shipFields(b){b.consent=$("a-agree").checked;b.idConsent=role==="shipper"&&$("a-idc").checked;if(role==="owner"){b.shopName=$("a-shop").value.trim();b.area=$("a-oarea").value}if(role==="shipper"){b.veh=$("a-veh").value;b.area=$("a-area").value;b.idType=$("a-idt").value;b.idNumber=$("a-idn").value.trim();b.dob=$("a-dob").value;b.address=$("a-addr").value.trim()}return b}
+function consentCheck(){if(!$("a-agree").checked)return"Please accept the Terms of Use and Privacy Policy.";if(role==="shipper"&&!$("a-idc").checked)return"Please give your consent for ID verification.";return""}
 function shipCheck(){if(role==="owner")return $("a-shop").value.trim().length<2?"Enter your shop name.":"";if(role!=="shipper")return"";if(!/^[A-Za-z0-9\/\s-]{5,20}$/.test($("a-idn").value.trim()))return"Enter your ID number.";if(!$("a-dob").value)return"Enter your date of birth.";if($("a-addr").value.trim().length<5)return"Enter your home address.";return""}
 $("aBtn").addEventListener("click",function(){
   if(busy)return;var name=$("a-name").value.trim(),ph=$("a-phone").value.trim(),em=$("a-email").value.trim().toLowerCase(),pw=$("a-pw").value,code=$("a-code").value.trim();
@@ -132,13 +133,13 @@ $("aBtn").addEventListener("click",function(){
   if(mode==="reset"){if(code.length<6)return aerr("Enter the reset code.");if(pw.length<8)return aerr("Password must be at least 8 characters.");work();
     return api("POST","/auth/reset",{email:em,code:code,password:pw}).then(function(){busy=false;$("aBtn").disabled=false;$("a-pw").value="";$("a-code").value="";toast("Password updated. Log in.");setMode("login")}).catch(fl)}
   if(mode==="login"&&!pw)return aerr("Enter your password.");
-  if(mode==="signup"){if(pw.length<8)return aerr("Password must be at least 8 characters.");if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck();if(se)return aerr(se)}
+  if(mode==="signup"){if(pw.length<8)return aerr("Password must be at least 8 characters.");if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck()||consentCheck();if(se)return aerr(se)}
   work();
   var req=mode==="signup"?api("POST","/auth/signup",shipFields({name:name,phone:ph,email:em,password:pw,role:role})):api("POST","/auth/login",{email:em,password:pw});
   req.then(function(j){if(j.needsVerify)return toVerify(j.email,"We sent a 6-digit code to "+j.email+". Enter it to continue.");start(j.user)})
     .catch(function(e){if(e.data&&e.data.needsVerify)return toVerify(e.data.email||em,e.message);fl(e)})});
 function start(u,shops){
-  me=u;myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop"].forEach(function(i){$(i).value=""});navFor(u);
+  me=u;if(u.needConsent)showConsent();myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop"].forEach(function(i){$(i).value=""});navFor(u);
   var f=u.name.split(" ")[0];$("hi").textContent="Hi, "+f+"!";$("hj").textContent="Hi, "+f+"!";
   if(u.role==="sender"){initPins();if(!shops)api("GET","/me").then(function(j){myShops=j.shops;fillShops()},function(){});fillShops();loadCatalog()}else if(u.role==="shipper"){$("jf").value=u.area||"all";pushSync();watchStart()}
   go(u.role==="admin"||u.role==="subadmin"?"admin":u.role==="owner"?"owner":u.role==="shipper"?"jobs":"home")}
@@ -157,7 +158,7 @@ function loadG(){if(!GOOGLE_CLIENT_ID){$("gNote").textContent="Google sign-in is
 function onG(r){api("POST","/auth/google",{credential:r&&r.credential}).then(function(j){
   if(j.needsSetup){pendingG={setup:j.setup,email:j.email};setMode("gsetup");$("a-name").value=j.name||"";$("aS").textContent="Signed in as "+j.email+". Finish setting up your account."}else start(j.user)}).catch(function(e){aerr(e.message)})}
 function gFinish(name,ph){if(!pendingG)return aerr("Please start again with Google.");
-  if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck();if(se)return aerr(se);
+  if(name.length<2)return aerr("Enter your full name.");if(!phoneOk(ph))return aerr("Enter a valid phone, e.g. 0712 345 678.");var se=shipCheck()||consentCheck();if(se)return aerr(se);
   work();api("POST","/auth/google/complete",shipFields({setup:pendingG.setup,name:name,phone:ph,role:role})).then(function(j){pendingG=null;start(j.user)}).catch(function(e){aerr(e.message)})}
 
 /* Ratings: 1-5 stars, shown as filled/empty stars */
@@ -284,6 +285,13 @@ function renderSubs(){areaChecks($("sbAreas"),subChosen);return api("GET","/admi
 $("sbAdd").addEventListener("click",function(){var em=$("sb-email").value.trim().toLowerCase(),a=Object.keys(subChosen);$("sbErr").textContent="";
   if(!emailOk(em)){$("sbErr").textContent="Enter their email address.";return}if(!a.length){$("sbErr").textContent="Choose at least one area.";return}
   api("POST","/admin/subs",{email:em,areas:a}).then(function(j){$("sb-email").value="";subChosen={};areaChecks($("sbAreas"),subChosen);toast("Sub-admin added");drawSubs(j.subs)},function(e){$("sbErr").textContent=e.message})});
+
+/* Consent gate: shown to existing users after the terms change (and by the server's needConsent answer) */
+function showConsent(){if(!me)return;$("cb-agree").checked=false;$("cb-id").checked=false;$("cbErr").textContent="";$("cb-idrow").style.display=me.role==="shipper"?"flex":"none";$("consentBox").style.display="grid"}
+$("cbOk").addEventListener("click",function(){$("cbErr").textContent="";if(!$("cb-agree").checked){$("cbErr").textContent="Please tick the box to accept.";return}
+  if(me.role==="shipper"&&!$("cb-id").checked){$("cbErr").textContent="Please tick the ID verification consent.";return}
+  api("POST","/me/consent",{consent:true,idConsent:$("cb-id").checked}).then(function(j){me=j.user;$("consentBox").style.display="none";toast("Thank you");var v=document.querySelector(".view.on");go(v?v.id.slice(2):"home")},function(e){$("cbErr").textContent=e.message})});
+$("cbOut").addEventListener("click",function(){$("out").click()});
 
 /* Slogans */
 var SLG=["Si lazima uende dukani"],si=0;

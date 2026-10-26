@@ -79,7 +79,7 @@ async function addCol(table, col, def) {
 /* Accounts that already existed before email verification / shipper approval are grandfathered: email counted as verified, shippers as approved. */
 async function migrate() {
   if (await addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE users SET email_verified=1");
-  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"], ["is_owner", "INTEGER NOT NULL DEFAULT 0"], ["is_sub", "INTEGER NOT NULL DEFAULT 0"]]) await addCol("users", c, d);
+  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"], ["is_owner", "INTEGER NOT NULL DEFAULT 0"], ["is_sub", "INTEGER NOT NULL DEFAULT 0"], ["consent_at", "INTEGER"], ["consent_ver", "TEXT"]]) await addCol("users", c, d);
   if (await addCol("deliveries", "notified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE deliveries SET notified=1"); /* old jobs are never announced */
   for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"],
     /* pay: 'cod' (pay on delivery) or 'mpesa'. pay_state: 'na' | 'awaiting' (M-Pesa chosen, not yet paid: hidden from the job board) | 'paid' */
@@ -170,6 +170,8 @@ const clear = (k) => q("DELETE FROM fails WHERE k=?").run(k);
 const guard = async (k) => { const l = await locked(k); if (l) bad("Too many attempts. Try again in " + l + "s.", 429); };
 
 /* ---------- Sessions (opaque random token in an HttpOnly cookie; only its hash is stored) ---------- */
+/* Version of the Terms of Use + Privacy Policy that people must have accepted. Change it when the legal text changes materially: everyone is asked to accept again. */
+const CONSENT_VER = "2026-10";
 const COOKIE = "smd_sid";
 function readCookie(req) { const m = (req.headers.cookie || "").split(/;\s*/).find((c) => c.startsWith(COOKIE + "=")); return m ? m.slice(COOKIE.length + 1) : ""; }
 async function login(res, uid) {
@@ -201,7 +203,7 @@ const DOC_KINDS = ["front", "back", "selfie"];
 const docsNeeded = (idType) => (idType === "Passport" ? ["front", "selfie"] : DOC_KINDS); /* a passport has no back side */
 const docsOf = async (uid) => (await q("SELECT kind FROM id_docs WHERE uid=?").all(uid)).map((d) => d.kind);
 async function pub(u) {
-  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.is_owner ? "owner" : u.is_sub ? "subadmin" : u.role, veh: u.veh || "", area: u.area || ""};
+  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.is_owner ? "owner" : u.is_sub ? "subadmin" : u.role, veh: u.veh || "", area: u.area || "", needConsent: u.consent_ver !== CONSENT_VER, consentVer: CONSENT_VER};
   if (o.role === "shipper") /* a shipper's own verification state (status: draft -> pending -> approved | rejected) */
     Object.assign(o, {status: u.status, rejectReason: u.reject_reason || "", idType: u.id_type || "", idNumber: u.id_number || "", dob: u.dob || "", address: u.address || "", docs: await docsOf(u.id)});
   if (o.role === "subadmin") o.areas = u.areas || await subAreas(u.id);
@@ -352,7 +354,7 @@ const legalPage = (file) => (req, res, next) => {
     res.type("html").send(t.replace(/{{CONTACT}}/g, contact).replace(/{{DATE}}/g, "October 2026"));
   } catch (e) { next(e); }
 };
-app.get(["/privacy", "/privacy-policy"], legalPage("privacy.html"));
+app.get(["/privacy", "/privacy-policy", "/terms", "/terms-and-privacy"], legalPage("terms.html"));
 app.get(["/delete-account", "/delete"], legalPage("delete-account.html"));
 app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0, setHeaders: (res, p) => {
   if (/[\\/](sw\.js|manifest\.webmanifest)$/.test(p)) res.setHeader("Cache-Control", "no-cache"); /* the browser must always see a new service worker / manifest */
@@ -372,6 +374,11 @@ api.use((req, res, next) => { /* CSRF defence in depth (cookie is already SameSi
   next();
 });
 api.use(auth);
+/* Until someone has accepted the current Terms and Privacy Policy they can only read their profile, accept, log out or delete their account. */
+api.use((req, res, next) => {
+  if (!req.user || req.user.consent_ver === CONSENT_VER || /^\/(config|me|me\/consent|me\/delete|auth\/[a-z\/]+|push\/unsubscribe)$/.test(req.path)) return next();
+  next(Object.assign(new HttpError(403, "Please accept the updated Terms of Use and Privacy Policy to continue."), {needConsent: true}));
+});
 const authLimit = rateLimit({windowMs: 60000, limit: +process.env.AUTH_RATE_LIMIT || 20, standardHeaders: true, legacyHeaders: false, message: {error: "Too many attempts. Please wait a minute."}});
 const wrap = (f) => (req, res, next) => Promise.resolve(f(req, res)).catch(next);
 
@@ -406,6 +413,8 @@ async function newUser(b, email, pw, google) {
   const owner = b.role === "owner"; /* a shop owner is stored as a 'sender' row with is_owner=1 (the role column only allows sender/shipper) */
   const role = b.role === "shipper" ? "shipper" : (b.role === "sender" || owner) ? "sender" : bad("Choose an account type.");
   const name = str(b.name, 2, 60, "Full name"); if (!phoneOk(b.phone)) bad("Enter a valid phone, e.g. 0712 345 678.");
+  if (b.consent !== true) bad("Please accept the Terms of Use and Privacy Policy to create an account.");
+  if (role === "shipper" && b.idConsent !== true) bad("Please give your consent for SMD to check your ID, only to verify who you are.");
   let veh = null, area = null, id = {}, status = "approved", shopName = null;
   if (owner) {
     shopName = str(b.shopName, 2, 60, "Shop name"); if (!Object.hasOwn(C.AREAS, b.area)) bad("Choose the area your shop is in."); area = b.area;
@@ -422,8 +431,8 @@ async function newUser(b, email, pw, google) {
     await dropUnverified(ex.id);
   }
   try {
-    const uid = Number((await q("INSERT INTO users(email,name,phone,role,veh,area,pw,google,created,email_verified,status,id_type,id_number,dob,address,is_owner) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run(email, name, b.phone.trim(), role, veh, area, pw, google ? 1 : 0, Date.now(), google ? 1 : 0, status, id.idType || null, id.idNumber || null, id.dob || null, id.address || null, owner ? 1 : 0)).lastInsertRowid);
+    const uid = Number((await q("INSERT INTO users(email,name,phone,role,veh,area,pw,google,created,email_verified,status,id_type,id_number,dob,address,is_owner,consent_at,consent_ver) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .run(email, name, b.phone.trim(), role, veh, area, pw, google ? 1 : 0, Date.now(), google ? 1 : 0, status, id.idType || null, id.idNumber || null, id.dob || null, id.address || null, owner ? 1 : 0, Date.now(), CONSENT_VER)).lastInsertRowid);
     if (owner) { /* the shop stays hidden from customers until an admin approves it (Shops tab) */
       try { await q("INSERT INTO catalog_shops(area,name,recommended,active,created,owner_uid) VALUES(?,?,0,0,?,?)").run(area, shopName, Date.now(), uid); }
       catch (e) { await q("DELETE FROM users WHERE id=?").run(uid); bad("A shop with that name already exists in this area.", 409); }
@@ -542,6 +551,12 @@ api.post("/me/delete", need(), wrap(async (req, res) => {
   await q("UPDATE deliveries SET shipper=NULL, sname='Deleted user', sphone='', veh=NULL WHERE shipper=?").run(u.id); /* completed jobs stay on the sender's record without the shipper's identity */
   await q("DELETE FROM users WHERE id=?").run(u.id);
   res.clearCookie(COOKIE, {path: "/"}); res.json({ok: true});
+}));
+api.post("/me/consent", need(), wrap(async (req, res) => {
+  if (req.body.consent !== true) bad("Please accept the Terms of Use and Privacy Policy.");
+  if (req.user.role === "shipper" && req.body.idConsent !== true) bad("Please give your consent for SMD to check your ID, only to verify who you are.");
+  await q("UPDATE users SET consent_at=?, consent_ver=? WHERE id=?").run(Date.now(), CONSENT_VER, req.user.id);
+  res.json({user: await pub(await q("SELECT * FROM users WHERE id=?").get(req.user.id))});
 }));
 api.get("/me", need(), wrap(async (req, res) => res.json({user: await pub(req.user), shops: await q("SELECT area AS a, name AS n FROM shops WHERE uid=?").all(req.user.id)})));
 api.patch("/me", need(), wrap(async (req, res) => {
@@ -1035,7 +1050,7 @@ app.use((err, req, res, next) => {
   if (err.type === "entity.parse.failed") err = new HttpError(400, "Invalid JSON.");
   if (err.type === "entity.too.large") err = new HttpError(413, "Request too large.");
   const s = err.status || 500; if (s === 500) console.error(err);
-  res.status(s).json({error: s === 500 ? "Something went wrong." : err.message});
+  res.status(s).json({error: s === 500 ? "Something went wrong." : err.message, ...(err.needConsent ? {needConsent: true} : {})});
 });
 
 async function cleanup() {

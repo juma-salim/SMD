@@ -34,6 +34,8 @@
     <div id="g-cred"><label for="a-email">Email</label><input id="a-email" type="email" autocomplete="email" autocapitalize="none">
     <label for="a-pw" id="l-pw">Password</label><input id="a-pw" type="password" autocomplete="current-password"></div>
     <div id="g-code" style="display:none"><label for="a-code" id="l-code">Reset code</label><input id="a-code" autocomplete="one-time-code" maxlength="12" autocapitalize="characters"></div>
+    <div id="g-consent" style="display:none"><label class="agree"><input type="checkbox" id="a-agree"><span>I have read and agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Use and Privacy Policy</a>.</span></label>
+      <label class="agree" id="g-idc" style="display:none"><input type="checkbox" id="a-idc"><span>I consent to SMD collecting and checking my ID details, date of birth, address and photos <b>only to verify my identity</b>. They will not be shared with anyone without my consent, unless the law requires it.</span></label></div>
     <div class="err" id="aErr" role="alert"></div>
     <button class="btn" id="aBtn">Log in</button>
     <div style="display:flex;justify-content:space-between;margin-top:6px"><button class="lnk" id="aSw">New here? Sign up</button><button class="lnk" id="aFg">Forgot password?</button></div>
@@ -188,7 +190,7 @@
     <button class="btn" id="pSave">Save changes</button></div>
   <div class="card" id="pushCard" style="display:none"><b>Job alerts</b><p class="note" id="pushNote">Get a phone alert when a new delivery appears near you, even when the app is closed. You must stay logged in.</p><button class="btn" id="pushBtn">Turn on job alerts</button></div>
   <div class="card"><b>Payment</b><p class="note">Pay with M-Pesa when you request a delivery: you get a PIN prompt on your phone. For goods above KES 999 from our listed shops you can pay after your goods arrive.</p></div>
-  <div class="card"><b>About</b><div><button class="btn sec installBtn" type="button" style="display:none;margin-top:6px">📲 Install the SMD app</button><p class="note iosHint" style="display:none">On iPhone: tap the Share button, then “Add to Home Screen”.</p></div><p class="note"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> · <a href="/delete-account" target="_blank" rel="noopener">Delete account help</a></p></div>
+  <div class="card"><b>About</b><p class="note"><a href="/terms" target="_blank" rel="noopener">Terms of Use &amp; Privacy Policy</a> · <a href="/delete-account" target="_blank" rel="noopener">Delete my data</a></p><div><button class="btn sec installBtn" type="button" style="display:none;margin-top:6px">📲 Install the SMD app</button><p class="note iosHint" style="display:none">On iPhone: tap the Share button, then “Add to Home Screen”.</p></div><p class="note"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> · <a href="/delete-account" target="_blank" rel="noopener">Delete account help</a></p></div>
   <div class="card"><button class="btn sec dng" id="out" style="margin-top:0">Log out</button></div>
   <div class="card" id="delCard"><button class="btn sec dng" id="delOpen" style="margin-top:0">Delete my account</button>
     <div id="delBox" style="display:none"><p class="note">This permanently deletes your profile, sign-in details and your own delivery requests, and for shippers your ID details and photos. It cannot be undone.</p>
@@ -197,7 +199,7 @@
       <div class="err" id="delErr" role="alert"></div>
       <button class="btn sec dng" id="delGo">Delete my account for good</button></div></div>
 </section>
-<footer class="pw">Powered by <b>Kayafrica</b></footer>
+<footer class="pw">Powered by <b>Kayafrica</b><br><a href="/terms" target="_blank" rel="noopener">Terms of Use &amp; Privacy Policy</a></footer>
 </div>
 
 <nav id="nav"><div>
@@ -219,6 +221,14 @@
   <div class="pbi" id="pbI">📲</div><h3 id="pbT"></h3><p id="pbS" class="note" style="font-size:14px"></p>
   <input id="pbPhone" type="tel" inputmode="tel" placeholder="0712 345 678" aria-label="M-Pesa number" style="display:none;margin-top:10px;text-align:center">
   <button class="btn" id="pbMain" style="display:none"></button><button class="btn sec" id="pbAlt" style="display:none"></button><button class="btn sec" id="pbClose" style="display:none">Close</button>
+</div></div>
+<div class="paybox" id="consentBox" role="dialog" aria-modal="true" aria-labelledby="cbT" style="display:none"><div class="card">
+  <h3 id="cbT" style="margin-top:0">Please review our terms</h3><p class="note" style="font-size:14px">We have a Terms of Use and Privacy Policy that explain how SMD works and how your personal data is collected, used and protected. Please read and accept them to keep using SMD.</p>
+  <p style="margin:6px 0"><a href="/terms" target="_blank" rel="noopener">Read the Terms of Use and Privacy Policy</a></p>
+  <label class="agree"><input type="checkbox" id="cb-agree"><span>I have read and agree to the Terms of Use and Privacy Policy.</span></label>
+  <label class="agree" id="cb-idrow" style="display:none"><input type="checkbox" id="cb-id"><span>I consent to SMD checking my ID details and photos <b>only to verify my identity</b>, and not sharing them without my consent, unless the law requires it.</span></label>
+  <div class="err" id="cbErr" role="alert"></div>
+  <button class="btn" id="cbOk">Agree and continue</button><button class="btn sec" id="cbOut">Log out</button>
 </div></div>
 <div class="toast" id="toast"></div>
 
