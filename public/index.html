@@ -133,6 +133,7 @@
 <section id="v-admin" class="view">
   <div class="card hero"><h2>Shipper review</h2><p>Check each shipper's details and ID photos before they can see jobs.</p></div>
   <div class="card"><div class="seg three" id="aTabs"><button type="button" data-t="pending" class="on">Pending</button><button type="button" data-t="approved">Approved</button><button type="button" data-t="rejected">Rejected</button></div></div>
+  <div id="rShops"></div>
   <div id="alist"></div>
 </section>
 
@@ -150,9 +151,27 @@
   <div id="slist"></div>
 </section>
 
+<section id="v-subs" class="view">
+  <div class="card hero"><h2>Sub-admins</h2><p>Give a trusted person the job of verifying shippers and approving shops in certain areas only. You can still review everywhere.</p></div>
+  <div class="card"><b>Add a sub-admin</b><p class="note">They must already have a SMD account (a plain Sender account). Type their email, tick their areas.</p>
+    <label for="sb-email">Their email</label><input id="sb-email" type="email" autocapitalize="none">
+    <label>Areas they look after</label><div id="sbAreas" class="chk"></div>
+    <div class="err" id="sbErr" role="alert"></div><button class="btn" id="sbAdd">Add sub-admin</button></div>
+  <div id="sbList"></div>
+</section>
+
+<section id="v-money" class="view">
+  <div class="card hero"><h2>Money</h2><p id="mNote">What you owe shippers and shops, payments to refund, and payouts you have made. Only orders paid through M-Pesa are counted.</p></div>
+  <div class="stats" id="mSum"></div>
+  <div class="card"><b>Payments to refund</b><p class="note">Double payments, wrong amounts, or payments for cancelled orders. Send the money back from your M-Pesa portal, then mark it as refunded here.</p><div id="mIssues"></div></div>
+  <div class="card"><b>Owed to shippers</b><div id="mShips"></div></div>
+  <div class="card"><b>Owed to shops</b><div id="mShops"></div></div>
+  <div class="card"><b>Recent payouts</b><div id="mHist"></div></div>
+</section>
+
 <section id="v-owner" class="view">
   <div class="card hero"><h2 id="oT">My shop</h2><p id="oS">Add the goods you sell and their prices. Customers order them through the app.</p></div>
-  <div class="card"><div id="oState"></div>
+  <div class="card"><div id="oState"></div><p class="note" id="oMoney"></p>
     <label for="o-name">Shop name</label><input id="o-name" maxlength="60"><button class="btn sec" id="o-save">Save name</button>
     <div class="err" id="oErr" role="alert"></div></div>
   <div class="card"><b>Add a good</b><div id="oAdd"></div></div>
@@ -189,8 +208,10 @@
   <button data-go="mine" data-r="shipper"><span>🏍️</span>My jobs</button>
   <button data-go="verify" data-r="shipper"><span>🪪</span>Verify</button>
   <button data-go="owner" data-r="owner"><span>🏪</span>My shop</button>
-  <button data-go="admin" data-r="admin"><span>🛡️</span>Review</button>
+  <button data-go="admin" data-r="admin subadmin"><span>🛡️</span>Review</button>
   <button data-go="shops" data-r="admin"><span>🏪</span>Shops</button>
+  <button data-go="subs" data-r="admin"><span>👥</span>Team</button>
+  <button data-go="money" data-r="admin"><span>💵</span>Money</button>
   <button data-go="fees" data-r="admin"><span>💰</span>Fees</button>
   <button data-go="set"><span>⚙️</span>Settings</button>
 </div></nav>

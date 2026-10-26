@@ -211,7 +211,7 @@ const hook = (body, secret = SECRET) => fetch(BASE + "/hooks/pay/" + secret, {me
     const before = await base();
     ok((await sender.call("GET", "/api/admin/fees")).s === 403 && (await sender.call("PUT", "/api/admin/fees", {a: "Mombasa", b: "Likoni", fee: 500})).s === 403, "only the admin can see or change fees");
     const fl = (await admin.call("GET", "/api/admin/fees")).j.fees;
-    ok(fl.length === 21 && fl.every((f) => f.fee === null && f.auto > 0), "admin sees every pair (6 places: 15 routes + 6 local), all automatic at first");
+    ok(fl.length === 36 && fl.every((f) => f.fee === null && f.auto > 0), "admin sees every pair (8 places: 28 routes + 8 local), all automatic at first");
     ok((await admin.call("PUT", "/api/admin/fees", {a: "Likoni", b: "Mombasa", fee: 400})).s === 200, "admin sets Likoni-Mombasa (either direction)");
     ok(((await sender.call("GET", "/api/config")).j.FEES || {})["Likoni|Mombasa"] === 400, "customers' config carries the new fee");
     ok(await base() === 400, "a new order on that route is charged the admin's fee");

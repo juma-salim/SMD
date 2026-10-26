@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 /* One 1-5 star rating per completed delivery, given by the sender. Plain columns (no foreign keys) so a shipper's rating survives the sender deleting their account. */
 CREATE TABLE IF NOT EXISTS ratings(delivery_id TEXT PRIMARY KEY, shipper INTEGER NOT NULL, owner INTEGER NOT NULL, stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5), created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS r_ship ON ratings(shipper);
+/* Money the admin has paid out to a shipper (ref 'u:<id>') or a shop (ref 's:<id>' or 'n:<name>|<area>'). What is OWED is worked out from completed, M-Pesa-paid orders minus these rows. */
+CREATE TABLE IF NOT EXISTS payouts(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL, label TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount>0), note TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS po_ref ON payouts(kind, ref);
+/* Sub-admins: verified accounts the main admin has given the job of reviewing shippers and owner shops in certain areas only. */
+CREATE TABLE IF NOT EXISTS sub_areas(uid INTEGER NOT NULL, area TEXT NOT NULL, PRIMARY KEY(uid, area));
 /* Browser push subscriptions of shippers (one row per device) */
 CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, uid INTEGER NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ps_uid ON push_subs(uid);
@@ -74,11 +79,11 @@ async function addCol(table, col, def) {
 /* Accounts that already existed before email verification / shipper approval are grandfathered: email counted as verified, shippers as approved. */
 async function migrate() {
   if (await addCol("users", "email_verified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE users SET email_verified=1");
-  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"], ["is_owner", "INTEGER NOT NULL DEFAULT 0"]]) await addCol("users", c, d);
+  for (const [c, d] of [["is_admin", "INTEGER NOT NULL DEFAULT 0"], ["status", "TEXT NOT NULL DEFAULT 'approved'"], ["id_type", "TEXT"], ["id_number", "TEXT"], ["dob", "TEXT"], ["address", "TEXT"], ["reject_reason", "TEXT"], ["reviewed_at", "INTEGER"], ["is_owner", "INTEGER NOT NULL DEFAULT 0"], ["is_sub", "INTEGER NOT NULL DEFAULT 0"]]) await addCol("users", c, d);
   if (await addCol("deliveries", "notified", "INTEGER NOT NULL DEFAULT 0")) await db.execute("UPDATE deliveries SET notified=1"); /* old jobs are never announced */
   for (const [c, d] of [["items", "TEXT"], ["goods", "INTEGER NOT NULL DEFAULT 0"], ["custom", "TEXT NOT NULL DEFAULT ''"], ["ship_ok", "INTEGER"], ["own_ok", "INTEGER"],
     /* pay: 'cod' (pay on delivery) or 'mpesa'. pay_state: 'na' | 'awaiting' (M-Pesa chosen, not yet paid: hidden from the job board) | 'paid' */
-    ["pay", "TEXT NOT NULL DEFAULT 'cod'"], ["pay_state", "TEXT NOT NULL DEFAULT 'na'"], ["receipt", "TEXT"]]) await addCol("deliveries", c, d);
+    ["shop_id", "INTEGER"], ["pay", "TEXT NOT NULL DEFAULT 'cod'"], ["pay_state", "TEXT NOT NULL DEFAULT 'na'"], ["receipt", "TEXT"]]) await addCol("deliveries", c, d);
 }
 
 /* Sample shops and goods so the app is usable on day one. Seeded once only (flag kept in the meta table); the admin replaces them in the app (Shops tab). */
@@ -122,6 +127,7 @@ async function initDb() {
   await migrate();
   await db.executeMultiple(SCHEMA2);
   await addCol("catalog_shops", "owner_uid", "INTEGER"); /* set when a shop owner runs this shop */
+  await addCol("payments", "refunded", "INTEGER NOT NULL DEFAULT 0"); await addCol("payments", "refund_note", "TEXT");
   await seedCatalog();
   await syncAdmins();
   await loadFees();
@@ -176,11 +182,16 @@ async function auth(req, res, next) {
     const t = readCookie(req); req.user = null;
     if (t) {
       const r = await q("SELECT u.* FROM sessions s JOIN users u ON u.id=s.uid WHERE s.th=? AND s.exp>? AND u.email_verified=1").get(sha(t), Date.now());
-      if (r) { if (r.is_admin) r.role = "admin"; else if (r.is_owner) r.role = "owner"; req.user = r; }
+      if (r) {
+        if (r.is_admin) r.role = "admin"; else if (r.is_owner) r.role = "owner";
+        else if (r.is_sub) { r.role = "subadmin"; r.areas = await subAreas(r.id); }
+        req.user = r;
+      }
     }
     next();
   } catch (e) { next(e); }
 }
+const subAreas = async (uid) => (await q("SELECT area FROM sub_areas WHERE uid=? ORDER BY area").all(uid)).map((x) => x.area).filter((a) => Object.hasOwn(C.AREAS, a));
 const need = (role) => (req, res, next) => {
   if (!req.user) return next(new HttpError(401, "Please log in."));
   if (role && req.user.role !== role) return next(new HttpError(403, "Not allowed for your account type."));
@@ -190,10 +201,11 @@ const DOC_KINDS = ["front", "back", "selfie"];
 const docsNeeded = (idType) => (idType === "Passport" ? ["front", "selfie"] : DOC_KINDS); /* a passport has no back side */
 const docsOf = async (uid) => (await q("SELECT kind FROM id_docs WHERE uid=?").all(uid)).map((d) => d.kind);
 async function pub(u) {
-  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.is_owner ? "owner" : u.role, veh: u.veh || "", area: u.area || ""};
+  const o = {email: u.email, name: u.name, phone: u.phone, role: u.is_admin ? "admin" : u.is_owner ? "owner" : u.is_sub ? "subadmin" : u.role, veh: u.veh || "", area: u.area || ""};
   if (o.role === "shipper") /* a shipper's own verification state (status: draft -> pending -> approved | rejected) */
     Object.assign(o, {status: u.status, rejectReason: u.reject_reason || "", idType: u.id_type || "", idNumber: u.id_number || "", dob: u.dob || "", address: u.address || "", docs: await docsOf(u.id)});
-  if (o.role === "shipper" && u.status === "approved") o.rating = await stats(u.id);
+  if (o.role === "subadmin") o.areas = u.areas || await subAreas(u.id);
+  if (o.role === "shipper" && u.status === "approved") { o.rating = await stats(u.id); o.money = await shipperMoney(u.id); }
   return o;
 }
 /* A shipper's work rating: average stars, how many ratings, and how many deliveries finished */
@@ -277,7 +289,10 @@ async function issueEmailCode(u) {
     text: "Your Send Me Deliveries verification code is " + code + ".\nIt expires in 10 minutes. If you did not create an account, ignore this email."});
   return true;
 }
-const notifyAdmins = (subject, text) => ADMINS.forEach((to) => sendMail({to, kind: "admin", subject, text}));
+const notifyAdmins = (subject, text, area) => { /* the main admins, plus the sub-admins in charge of that area */
+  const to = new Set(ADMINS);
+  (async () => { if (area) for (const r of await q("SELECT u.email FROM users u JOIN sub_areas a ON a.uid=u.id WHERE u.is_sub=1 AND u.email_verified=1 AND a.area=?").all(area)) to.add(r.email); to.forEach((t) => sendMail({to: t, kind: "admin", subject, text})); })().catch(() => {});
+};
 
 /* ---------- Push notifications for shippers (Web Push) ----------
    Needs VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY (make them with: npm run vapid). Without them the app still works; shippers just get no phone alerts.
@@ -382,7 +397,7 @@ async function dropOwnerShop(uid) {
   await q("DELETE FROM catalog_shops WHERE owner_uid=?").run(uid);
 }
 async function dropUnverified(id) {
-  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(id);
+  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs", "sub_areas"]) await q("DELETE FROM " + t + " WHERE uid=?").run(id);
   await dropOwnerShop(id);
   await q("DELETE FROM deliveries WHERE owner=?").run(id);
   await q("DELETE FROM users WHERE id=?").run(id);
@@ -519,7 +534,9 @@ api.post("/me/delete", need(), wrap(async (req, res) => {
   const busy = (await q("SELECT COUNT(*) c FROM deliveries WHERE (owner=? AND (step=1 OR (step=0 AND pay_state='paid'))) OR (shipper=? AND step=1)").get(u.id, u.id)).c
     || (await q("SELECT COUNT(*) c FROM payments WHERE uid=? AND status IN ('initiating','pending')").get(u.id)).c;
   if (busy) bad("You still have a delivery in progress or a paid request that is not complete. Finish or cancel it first, then delete your account.", 409);
-  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs"]) await q("DELETE FROM " + t + " WHERE uid=?").run(u.id);
+  if (u.role === "shipper" && (await shipperMoney(u.id)).owed > 0) bad("You still have earnings waiting for payout. Ask support to pay you first, then delete your account.", 409);
+  if (u.role === "owner") { const sh = await q("SELECT id FROM catalog_shops WHERE owner_uid=?").get(u.id); const L = await ledger(); if (sh && L.owed("shop", "s:" + sh.id, (L.shops.get("s:" + sh.id) || {earned: 0}).earned) > 0) bad("Your shop still has sales waiting for payout. Ask support to pay you first, then delete your account.", 409); }
+  for (const t of ["sessions", "resets", "email_codes", "shops", "id_docs", "push_subs", "sub_areas"]) await q("DELETE FROM " + t + " WHERE uid=?").run(u.id);
   await dropOwnerShop(u.id); await q("DELETE FROM ratings WHERE shipper=?").run(u.id);
   await q("DELETE FROM deliveries WHERE owner=?").run(u.id);
   await q("UPDATE deliveries SET shipper=NULL, sname='Deleted user', sphone='', veh=NULL WHERE shipper=?").run(u.id); /* completed jobs stay on the sender's record without the shipper's identity */
@@ -558,27 +575,33 @@ api.post("/me/verification", need("shipper"), wrap(async (req, res) => { /* save
   if (miss.length) bad("Please upload: " + miss.map((k) => ({front: "ID front", back: "ID back", selfie: "selfie with ID"})[k]).join(", ") + ".");
   try { await q("UPDATE users SET id_type=?, id_number=?, dob=?, address=?, status='pending', reject_reason=NULL WHERE id=?").run(id.idType, id.idNumber, id.dob, id.address, u.id); }
   catch (e) { if (idTaken(e)) bad("That ID number is already registered to another account. Contact support if this is a mistake.", 409); throw e; }
-  notifyAdmins("New shipper awaiting approval", u.name + " (" + u.email + ") submitted ID documents. Open SMD > Review to approve or reject.");
+  notifyAdmins("New shipper awaiting approval", u.name + " (" + u.email + ") submitted ID documents. Open SMD > Review to approve or reject.", u.area);
   res.json({user: await pub(await q("SELECT * FROM users WHERE id=?").get(u.id))});
 }));
 
 /* Admin: review queue */
 const adminOnly = need("admin");
+/* The main admin reviews everywhere; a sub-admin only in their own areas. */
+const reviewer = (req, res, next) => (!req.user ? next(new HttpError(401, "Please log in.")) : req.user.role === "admin" || req.user.role === "subadmin" ? next() : next(new HttpError(403, "Not allowed for your account type.")));
+const scope = (req) => (req.user.role === "admin" ? null : req.user.areas);
+const inScope = (req, area) => { const sc = scope(req); return !sc || sc.includes(area); };
+const areaClause = (sc) => (sc ? " AND area IN (" + (sc.length ? sc.map(() => "?").join(",") : "NULL") + ")" : "");
 const SHIP_STATUS = ["pending", "approved", "rejected"];
-api.get("/admin/shippers", adminOnly, wrap(async (req, res) => {
+api.get("/admin/shippers", reviewer, wrap(async (req, res) => {
   const s = String(req.query.status || "pending"); if (!SHIP_STATUS.includes(s)) bad("Invalid status.");
-  const rows = await q("SELECT id,name,email,phone,veh,area,id_type,id_number,dob,address,status,reject_reason,created,reviewed_at FROM users WHERE role='shipper' AND is_admin=0 AND status=? ORDER BY created ASC LIMIT 200").all(s);
-  const counts = {}; for (const k of SHIP_STATUS) counts[k] = (await q("SELECT COUNT(*) c FROM users WHERE role='shipper' AND is_admin=0 AND status=?").get(k)).c;
+  const sc = scope(req), ac = areaClause(sc), args = sc ? sc : [];
+  const rows = await q("SELECT id,name,email,phone,veh,area,id_type,id_number,dob,address,status,reject_reason,created,reviewed_at FROM users WHERE role='shipper' AND is_admin=0 AND status=?" + ac + " ORDER BY created ASC LIMIT 200").all(s, ...args);
+  const counts = {}; for (const k of SHIP_STATUS) counts[k] = (await q("SELECT COUNT(*) c FROM users WHERE role='shipper' AND is_admin=0 AND status=?" + ac).get(k, ...args)).c;
   const shippers = []; for (const r of rows) shippers.push({id: r.id, name: r.name, email: r.email, phone: r.phone, veh: r.veh, area: r.area, idType: r.id_type, idNumber: r.id_number, dob: r.dob, address: r.address, status: r.status, reason: r.reject_reason || "", at: r.created, reviewed: r.reviewed_at, docs: await docsOf(r.id)});
   res.json({counts, shippers});
 }));
-api.get("/admin/shippers/:id/docs/:kind", adminOnly, wrap(async (req, res) => {
-  const id = Number(req.params.id), u = Number.isInteger(id) && await q("SELECT id FROM users WHERE id=? AND role='shipper' AND is_admin=0").get(id); if (!u) bad("Not found.", 404);
+api.get("/admin/shippers/:id/docs/:kind", reviewer, wrap(async (req, res) => {
+  const id = Number(req.params.id), u = Number.isInteger(id) && await q("SELECT id,area FROM users WHERE id=? AND role='shipper' AND is_admin=0").get(id); if (!u || !inScope(req, u.area)) bad("Not found.", 404);
   await sendDoc(res, id, req.params.kind);
 }));
 async function decide(req, res, ok) {
   const id = Number(req.params.id), reason = ok ? null : str(req.body.reason, 3, 200, "Reason");
-  const u = Number.isInteger(id) && await q("SELECT * FROM users WHERE id=? AND role='shipper' AND is_admin=0").get(id); if (!u) bad("Not found.", 404);
+  const u = Number.isInteger(id) && await q("SELECT * FROM users WHERE id=? AND role='shipper' AND is_admin=0").get(id); if (!u || !inScope(req, u.area)) bad("Not found.", 404);
   const from = ok ? "('pending','rejected')" : "('pending','approved')"; /* admins may also reverse an earlier decision */
   const r = await q("UPDATE users SET status=?, reject_reason=?, reviewed_at=? WHERE id=? AND status IN " + from).run(ok ? "approved" : "rejected", reason, Date.now(), id);
   if (!r.changes) bad("This shipper is not in a state that can be " + (ok ? "approved" : "rejected") + ".", 409);
@@ -587,8 +610,8 @@ async function decide(req, res, ok) {
       : "Hi " + u.name + ", we could not verify your ID.\nReason: " + reason + "\nOpen the app, fix the details or photos, and submit again."});
   res.json({ok: true});
 }
-api.post("/admin/shippers/:id/approve", adminOnly, wrap((req, res) => decide(req, res, true)));
-api.post("/admin/shippers/:id/reject", adminOnly, wrap((req, res) => decide(req, res, false)));
+api.post("/admin/shippers/:id/approve", reviewer, wrap((req, res) => decide(req, res, true)));
+api.post("/admin/shippers/:id/reject", reviewer, wrap((req, res) => decide(req, res, false)));
 
 /* Shop catalog: recommended shops first, each with its per-unit price list */
 async function catalog(all) {
@@ -645,7 +668,8 @@ api.delete("/admin/items/:id", need("admin"), wrap(async (req, res) => { await r
 const myShop = async (req) => (await q("SELECT * FROM catalog_shops WHERE owner_uid=?").get(req.user.id)) || bad("No shop is linked to your account.", 404);
 async function ownerView(sh) {
   const items = await q("SELECT * FROM catalog_items WHERE shop_id=? ORDER BY name COLLATE NOCASE, unit").all(sh.id);
-  return {shop: {id: sh.id, name: sh.name, area: sh.area, approved: !!sh.active, rec: !!sh.recommended, items: items.map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}};
+  const L = await ledger(), sales = L.shops.get("s:" + sh.id) || {earned: 0, n: 0}, got = L.paid.get("shop|s:" + sh.id) || 0;
+  return {money: {earned: sales.earned, paid: got, owed: Math.max(0, sales.earned - got), orders: sales.n}, shop: {id: sh.id, name: sh.name, area: sh.area, approved: !!sh.active, rec: !!sh.recommended, items: items.map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}};
 }
 api.get("/owner/shop", need("owner"), wrap(async (req, res) => res.json(await ownerView(await myShop(req)))));
 api.patch("/owner/shop", need("owner"), wrap(async (req, res) => {
@@ -690,6 +714,93 @@ api.post("/deliveries/:id/rate", need("sender"), wrap(async (req, res) => {
   try { await q("INSERT INTO ratings(delivery_id,shipper,owner,stars,created) VALUES(?,?,?,?,?)").run(String(req.params.id), d.shipper, req.user.id, stars, Date.now()); }
   catch (e) { if (/UNIQUE|PRIMARY/i.test(String(e.message))) bad("You already rated this delivery.", 409); throw e; }
   res.json({ok: true, rating: stars});
+}));
+
+/* ---------- Sub-admins (main admin only) and owner-shop approvals (admin + sub-admins, within their areas) ---------- */
+const areasIn = (v) => { if (!Array.isArray(v) || !v.length || v.length > 20 || !v.every((a) => typeof a === "string" && Object.hasOwn(C.AREAS, a))) bad("Choose at least one area."); return [...new Set(v)]; };
+async function subList() {
+  const rows = await q("SELECT id,name,email,phone FROM users WHERE is_sub=1 ORDER BY name COLLATE NOCASE").all(), out = [];
+  for (const r of rows) out.push({id: r.id, name: r.name, email: r.email, phone: r.phone, areas: await subAreas(r.id)});
+  return out;
+}
+api.get("/admin/subs", adminOnly, wrap(async (req, res) => res.json({subs: await subList()})));
+api.post("/admin/subs", adminOnly, wrap(async (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase(); if (!emailOk(email)) bad("Enter the person's email address."); const areas = areasIn(req.body.areas);
+  const u = await q("SELECT * FROM users WHERE email=? AND email_verified=1").get(email);
+  if (!u) bad("No account with that email. Ask them to sign up first (as a Sender), then add them here.", 404);
+  if (u.is_admin || ADMINS.includes(email)) bad("That person is already a main admin.", 409);
+  if (u.is_sub) bad("That person is already a sub-admin. Edit their areas instead.", 409);
+  if (u.role !== "sender" || u.is_owner) bad("Only a plain Sender account can become a sub-admin (not a shipper or a shop owner).", 409);
+  if ((await q("SELECT COUNT(*) c FROM deliveries WHERE owner=? AND step<2").get(u.id)).c) bad("That account still has open delivery requests. Let them finish first.", 409);
+  await q("UPDATE users SET is_sub=1 WHERE id=?").run(u.id);
+  for (const a of areas) await q("INSERT INTO sub_areas(uid,area) VALUES(?,?) ON CONFLICT DO NOTHING").run(u.id, a);
+  sendMail({to: u.email, kind: "subadmin", subject: "You are now an SMD sub-admin", text: "Hi " + u.name + ", you can now verify shippers and approve shops in: " + areas.join(", ") + ".\nLog in to SMD and open the Review tab."});
+  res.status(201).json({subs: await subList()});
+}));
+api.put("/admin/subs/:id", adminOnly, wrap(async (req, res) => {
+  const id = idp(req.params.id), areas = areasIn(req.body.areas); if (!(await q("SELECT id FROM users WHERE id=? AND is_sub=1").get(id))) bad("Not found.", 404);
+  await q("DELETE FROM sub_areas WHERE uid=?").run(id); for (const a of areas) await q("INSERT INTO sub_areas(uid,area) VALUES(?,?)").run(id, a);
+  res.json({subs: await subList()});
+}));
+api.delete("/admin/subs/:id", adminOnly, wrap(async (req, res) => {
+  const id = idp(req.params.id); if (!(await q("UPDATE users SET is_sub=0 WHERE id=? AND is_sub=1").run(id)).changes) bad("Not found.", 404);
+  await q("DELETE FROM sub_areas WHERE uid=?").run(id); res.json({subs: await subList()}); /* back to a normal sender account */
+}));
+api.get("/review/shops", reviewer, wrap(async (req, res) => {
+  const sc = scope(req), rows = await q("SELECT s.id, s.name, s.area, u.name oname, u.phone ophone, (SELECT COUNT(*) FROM catalog_items i WHERE i.shop_id=s.id) goods FROM catalog_shops s JOIN users u ON u.id=s.owner_uid WHERE s.active=0" + areaClause(sc).replace("area IN", "s.area IN") + " ORDER BY s.created").all(...(sc || []));
+  res.json({shops: rows.map((r) => ({id: r.id, name: r.name, area: r.area, owner: r.oname, phone: r.ophone, goods: Number(r.goods)}))});
+}));
+api.post("/review/shops/:id/approve", reviewer, wrap(async (req, res) => {
+  const sh = await q("SELECT id,area FROM catalog_shops WHERE id=? AND owner_uid IS NOT NULL AND active=0").get(idp(req.params.id));
+  if (!sh || !inScope(req, sh.area)) bad("Not found.", 404);
+  await q("UPDATE catalog_shops SET active=1 WHERE id=?").run(sh.id); res.json({ok: true});
+}));
+
+/* ---------- Money: what is owed to shippers and shops, payouts, and payments that need a refund ----------
+   Only orders paid through M-Pesa count (cash orders never pass through us). A shipper earns SHIPPER_SHARE_PCT % of the delivery fee; the shop gets the goods amount. */
+const PLATFORM_PCT = (() => { const v = process.env.PLATFORM_FEE_PCT; const n = v === undefined || v === "" ? 15 : +v; return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 15; })(); /* the admin's cut of each delivery fee (default 15%) */
+const SHARE = 100 - PLATFORM_PCT; /* the shipper's cut */
+async function ledger() {
+  const rows = await q("SELECT shipper, price, goods, shop, src, shop_id, (SELECT id FROM catalog_shops c WHERE c.area=deliveries.src AND c.name=deliveries.shop COLLATE NOCASE) mid FROM deliveries WHERE step=2 AND pay_state='paid'").all();
+  const ships = new Map(), shops = new Map(); let platform = 0;
+  for (const d of rows) {
+    if (d.shipper) { const r = ships.get(d.shipper) || {earned: 0, n: 0}; const cut = Math.floor(d.price * SHARE / 100); r.earned += cut; platform += d.price - cut; r.n++; ships.set(d.shipper, r); }
+    if (d.goods > 0) { const id = d.shop_id || d.mid, ref = id ? "s:" + id : "n:" + d.shop + "|" + d.src, r = shops.get(ref) || {earned: 0, n: 0, name: d.shop, area: d.src, id: id || null}; r.earned += d.goods; r.n++; shops.set(ref, r); }
+  }
+  const paid = new Map(); for (const p of await q("SELECT kind, ref, SUM(amount) a FROM payouts GROUP BY kind, ref").all()) paid.set(p.kind + "|" + p.ref, Number(p.a));
+  const owed = (kind, ref, earned) => Math.max(0, earned - (paid.get(kind + "|" + ref) || 0));
+  return {ships, shops, paid, owed, share: SHARE, platform};
+}
+const shipperMoney = async (id, L) => { L = L || await ledger(); const e = (L.ships.get(id) || {earned: 0}).earned, p = L.paid.get("shipper|u:" + id) || 0; return {earned: e, paid: p, owed: Math.max(0, e - p)}; };
+api.get("/admin/money", need("admin"), wrap(async (req, res) => {
+  const L = await ledger(), ships = [], shops = [];
+  for (const [id, r] of L.ships) { const u = await q("SELECT name, phone FROM users WHERE id=?").get(id); const ref = "u:" + id; ships.push({ref, name: u ? u.name : "Deleted user", phone: u ? u.phone : "", n: r.n, earned: r.earned, paid: L.paid.get("shipper|" + ref) || 0, owed: L.owed("shipper", ref, r.earned)}); }
+  for (const [ref, r] of L.shops) {
+    const sh = r.id ? await q("SELECT s.name, s.area, u.name oname, u.phone ophone FROM catalog_shops s LEFT JOIN users u ON u.id=s.owner_uid WHERE s.id=?").get(r.id) : null;
+    shops.push({ref, name: sh ? sh.name : r.name, area: sh ? sh.area : r.area, owner: sh && sh.oname ? sh.oname : "", phone: sh && sh.ophone ? sh.ophone : "", n: r.n, earned: r.earned, paid: L.paid.get("shop|" + ref) || 0, owed: L.owed("shop", ref, r.earned)});
+  }
+  const byOwed = (a, b) => b.owed - a.owed || a.name.localeCompare(b.name); ships.sort(byOwed); shops.sort(byOwed);
+  const issues = await q("SELECT p.id, p.status, p.amount, p.receipt, p.phone, p.result_desc, p.created, p.refunded, p.refund_note, p.delivery_id, u.name FROM payments p LEFT JOIN users u ON u.id=p.uid WHERE p.status IN ('mismatch','duplicate','orphan') ORDER BY p.refunded ASC, p.created DESC LIMIT 100").all();
+  const col = await q("SELECT COALESCE(SUM(amount),0) a, COUNT(*) n FROM payments WHERE status='success'").get();
+  const hist = await q("SELECT id, kind, label, amount, note, created FROM payouts ORDER BY created DESC LIMIT 30").all();
+  const sum = (a, k) => a.reduce((t, x) => t + x[k], 0);
+  res.json({share: L.share, platformPct: PLATFORM_PCT, platformEarned: L.platform, collected: Number(col.a), orders: Number(col.n), owedShippers: sum(ships, "owed"), owedShops: sum(shops, "owed"), shippers: ships, shops, issues: issues.map((i) => ({id: i.id, status: i.status, amount: i.amount, receipt: i.receipt || "", phone: i.phone, name: i.name || "", order: i.delivery_id, desc: i.result_desc || "", at: i.created, refunded: !!i.refunded, note: i.refund_note || ""})), payouts: hist});
+}));
+api.post("/admin/payouts", need("admin"), wrap(async (req, res) => {
+  const b = req.body, kind = b.kind === "shipper" ? "shipper" : b.kind === "shop" ? "shop" : bad("Choose shipper or shop."), ref = typeof b.ref === "string" ? b.ref : "";
+  const amount = b.amount; if (!Number.isInteger(amount) || amount < 1 || amount > 10000000) bad("Enter a whole number of shillings.");
+  const note = b.note ? str(b.note, 0, 60, "Note") : "";
+  const L = await ledger(), src = kind === "shipper" ? L.ships.get(Number(ref.slice(2))) : L.shops.get(ref);
+  if (!src || (kind === "shipper" && !/^u:\d+$/.test(ref))) bad("Nothing is owed to that account.", 404);
+  const owed = L.owed(kind, ref, src.earned); if (amount > owed) bad("That is more than the KES " + owed + " owed.", 409);
+  let label = kind === "shop" ? src.name + " (" + src.area + ")" : ((await q("SELECT name FROM users WHERE id=?").get(Number(ref.slice(2)))) || {name: "Deleted user"}).name;
+  await q("INSERT INTO payouts(kind,ref,label,amount,note,created) VALUES(?,?,?,?,?,?)").run(kind, ref, label, amount, note, Date.now());
+  res.status(201).json({ok: true});
+}));
+api.post("/admin/payments/:id/refunded", need("admin"), wrap(async (req, res) => {
+  const note = req.body.note ? str(req.body.note, 0, 80, "Note") : "";
+  const r = await q("UPDATE payments SET refunded=1, refund_note=? WHERE id=? AND status IN ('mismatch','duplicate','orphan') AND refunded=0").run(note, idp(req.params.id));
+  if (!r.changes) bad("Not found or already marked.", 404); res.json({ok: true});
 }));
 
 /* Sender */
@@ -740,7 +851,7 @@ api.post("/deliveries", need("sender"), wrap(async (req, res) => {
   let id;
   for (let i = 0; i < 5; i++) {
     id = "SMD-" + crypto.randomBytes(3).toString("hex").toUpperCase();
-    try { await q("INSERT INTO deliveries(id,owner,shop,src,dst,land,drop_,pp,dp,item,w,spd,rn,rp,price,step,at,items,goods,custom,pay,pay_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)").run(id, req.user.id, shop, b.from, b.to, land, drop, pp, dp, item, b.w, b.s, rn, b.rp.trim(), price, Date.now(), lines.length ? JSON.stringify(lines) : null, goods, custom, pay, pay === "mpesa" ? "awaiting" : pay === "later" ? "later" : "na"); break; }
+    try { await q("INSERT INTO deliveries(id,owner,shop,src,dst,land,drop_,pp,dp,item,w,spd,rn,rp,price,step,at,items,goods,custom,pay,pay_state,shop_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)").run(id, req.user.id, shop, b.from, b.to, land, drop, pp, dp, item, b.w, b.s, rn, b.rp.trim(), price, Date.now(), lines.length ? JSON.stringify(lines) : null, goods, custom, pay, pay === "mpesa" ? "awaiting" : pay === "later" ? "later" : "na", shopId); break; }
     catch (e) { id = null; }
   }
   if (!id) bad("Could not create request. Try again.", 500);

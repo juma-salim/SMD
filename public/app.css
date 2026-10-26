@@ -117,3 +117,6 @@ b.sub{display:block;margin:14px 0 4px;font-size:13px}
 .stars{color:#f5a623;letter-spacing:1px;white-space:nowrap}.stars.off{color:var(--line)}
 .rate{display:flex;gap:4px;align-items:center;margin:8px 0}.rate button{border:0;background:none;font-size:30px;line-height:1;color:var(--line);cursor:pointer;padding:2px}.rate button.on{color:#f5a623}
 .tag.warn{background:rgba(245,166,35,.16);color:#b86e00}
+
+.chk{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}.chk label{display:inline-flex;align-items:center;gap:6px;margin:0;padding:8px 12px;border:1.5px solid var(--line);border-radius:20px;font-size:13px;color:var(--tx);cursor:pointer}
+.chk input{width:auto;margin:0}.chk label.on{border-color:var(--pri);background:rgba(255,107,0,.1)}

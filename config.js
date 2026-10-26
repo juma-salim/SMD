@@ -1,8 +1,9 @@
 /* Business configuration: single source of truth. The server uses it for pricing and validation; the client gets it from /api/config. */
 const AREAS = {
-  /* Listed in route order. "pos" = km from Mombasa: it sets the price AND the order shown on the map/lists. x,y = map position. */
-  Mombasa:{x:215,y:22,pos:0,side:"l"}, Likoni:{x:205,y:58,pos:5,side:"l"}, Kombani:{x:172,y:92,pos:30,side:"l"},
-  Tiwi:{x:190,y:126,pos:36,side:"l"}, Ukunda:{x:152,y:158,pos:42,side:"l"}, Diani:{x:190,y:186,pos:46,side:"l"}
+  /* Listed in route order. "pos" = km from Mombasa along the way (north is negative): it sets the price AND the order shown on the map/lists. x,y = map position.
+     Mariakani and Mtwapa are the north/west side (no ferry needed to reach Mombasa); Likoni and everything south of it is reached by the Likoni ferry. */
+  Mariakani:{x:100,y:16,pos:-25,side:"l"}, Mtwapa:{x:205,y:34,pos:-17,side:"l"}, Mombasa:{x:215,y:56,pos:0,side:"l"}, Likoni:{x:205,y:80,pos:5,side:"l"}, Kombani:{x:172,y:106,pos:30,side:"l"},
+  Tiwi:{x:190,y:132,pos:36,side:"l"}, Ukunda:{x:152,y:158,pos:42,side:"l"}, Diani:{x:190,y:184,pos:46,side:"l"}
 };
 const SHOPS = [
   {n:"Sample Supermarket",a:"Mombasa"},{n:"Sample Pharmacy",a:"Mombasa"},{n:"Sample Supermarket",a:"Likoni"},{n:"Sample Pharmacy",a:"Likoni"},
@@ -21,7 +22,7 @@ const DEFER_MIN = +process.env.DEFER_MIN_GOODS || 999;
 function routeBase(f, t) {
   const d = Math.abs(AREAS[f].pos - AREAS[t].pos);
   const route = f === t ? P.local : P.base + Math.round(d * P.perKm);
-  const ferry = (f !== t && ((f === "Mombasa") !== (t === "Mombasa"))) ? P.ferry : 0;
+  const ferry = (f !== t && (AREAS[f].pos <= 0) !== (AREAS[t].pos <= 0)) ? P.ferry : 0; /* crossing the Likoni channel */
   return {d, route, ferry};
 }
 /* fee: the admin's fixed route fee for this pair (replaces route + ferry), or null/undefined to use the formula. */
