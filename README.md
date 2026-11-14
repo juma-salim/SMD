@@ -113,12 +113,14 @@ One combined page, `legal/terms.html`, is served at `/terms` (and `/privacy`, `/
 
 ## SMD assistant (chat)
 
-A chat button (💬 Help) appears in the app when `ANTHROPIC_API_KEY` is set on the server. It answers in English or Kiswahili.
+A chat button (💬 Help) appears in the app when `GROQ_API_KEY` is set on the server (free key from console.groq.com, no card). It answers in English or Kiswahili.
+Anthropic works too: set `ANTHROPIC_API_KEY` instead (if both are set, Groq is used; `CHAT_PROVIDER=anthropic` forces the other).
 
 - **Visitors**: general questions and fee quotes. No account data.
 - **Senders**: also their own orders and tracking, shop search, and **order drafts**. The assistant never places or pays for an order: it fills in the normal order screen and the person taps Send there.
 - **Shippers**: open jobs (no personal details), their own jobs, earnings, rating, and verification status.
 - **Shop owners**: their own shop, goods and amounts owed.
 
-Safety: every tool runs on the server for the signed-in person only, returns no phone numbers, emails or ID details, and chat messages are not stored (only a per-day message count). Limits per minute, per person per day, and a global daily cap (`CHAT_GLOBAL_DAILY`) keep cost under control. The Terms and Privacy Policy name the AI provider; people are asked to accept the updated version once.
-Test: `node test-chat.js` (uses a fake model, no key or cost).
+Safety: every tool runs on the server for the signed-in person only, returns no phone numbers, emails or ID details, and chat messages are not stored (only a per-day message count). Limits per minute, per person per day, and a global daily cap (`CHAT_GLOBAL_DAILY`) keep usage under control.
+Free-tier note: Groq limits tokens per minute and per day for each model. `CHAT_MODEL` takes a comma-separated list; when one model is rate-limited the next answers. If all are limited, people see "busy, try again". Check Groq's current limits and data terms in your console.
+Test: `node test-chat.js` (uses a fake model, no key).

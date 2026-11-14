@@ -174,7 +174,7 @@ const guard = async (k) => { const l = await locked(k); if (l) bad("Too many att
 
 /* ---------- Sessions (opaque random token in an HttpOnly cookie; only its hash is stored) ---------- */
 /* Version of the Terms of Use + Privacy Policy that people must have accepted. Change it when the legal text changes materially: everyone is asked to accept again. */
-const CONSENT_VER = "2026-11";
+const CONSENT_VER = "2026-11b";
 const COOKIE = "smd_sid";
 function readCookie(req) { const m = (req.headers.cookie || "").split(/;\s*/).find((c) => c.startsWith(COOKIE + "=")); return m ? m.slice(COOKIE.length + 1) : ""; }
 async function login(res, uid) {

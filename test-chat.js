@@ -8,32 +8,42 @@ let pass = 0, failN = 0;
 const ok = (c, name) => { if (c) { pass++; console.log("  ✓ " + name); } else { failN++; console.log("  ✗ FAIL: " + name); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ---- fake model API ---- */
+/* ---- fake model API (speaks Groq/OpenAI format at /openai/..., Anthropic format at /v1/messages) ---- */
 const seen = []; let fakeCalls = 0;
 const fake = http.createServer((req, res) => {
   let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-    const body = JSON.parse(b); fakeCalls++; seen.push({key: req.headers["x-api-key"], ver: req.headers["anthropic-version"], body});
+    const raw = JSON.parse(b), groq = req.url.startsWith("/openai"); fakeCalls++;
     const send = (o, code = 200) => { res.writeHead(code, {"content-type": "application/json"}); res.end(JSON.stringify(o)); };
-    const last = body.messages[body.messages.length - 1];
-    if (Array.isArray(last.content)) { /* round two: echo what the server fed back from the tool */
-      if (body.messages.some((m) => typeof m.content === "string" && m.content.includes("LOOP"))) return send({stop_reason: "tool_use", content: [{type: "tool_use", id: "t" + fakeCalls, name: "get_fee_quote", input: {from: "Mombasa", to: "Diani"}}]});
-      return send({stop_reason: "end_turn", content: [{type: "text", text: "TOOLRESULT:" + last.content.map((c) => c.content).join("|")}]});
-    }
-    const t = last.content, tool = (name, input) => send({stop_reason: "tool_use", content: [{type: "text", text: "checking"}, {type: "tool_use", id: "t" + fakeCalls, name, input}]});
+    const body = groq ? {model: raw.model, system: raw.messages[0].content, max_tokens: raw.max_completion_tokens, tools: (raw.tools || []).map((t) => ({name: t.function.name, input_schema: t.function.parameters})), messages: raw.messages.slice(1), raw}
+      : {model: raw.model, system: raw.system, max_tokens: raw.max_tokens, tools: raw.tools, messages: raw.messages, raw};
+    seen.push({key: groq ? String(req.headers.authorization || "").replace("Bearer ", "") : req.headers["x-api-key"], ver: req.headers["anthropic-version"], groq, body});
+    const reply = (text) => send(groq ? {choices: [{finish_reason: "stop", message: {role: "assistant", content: text}}]} : {stop_reason: "end_turn", content: [{type: "text", text}]});
+    const call = (name, input, badJson) => send(groq ? {choices: [{finish_reason: "tool_calls", message: {role: "assistant", content: "checking", tool_calls: [{id: "t" + fakeCalls, type: "function", function: {name, arguments: badJson ? "{not json" : JSON.stringify(input)}}]}}]}
+      : {stop_reason: "tool_use", content: [{type: "text", text: "checking"}, {type: "tool_use", id: "t" + fakeCalls, name, input}]});
+    const last = body.messages[body.messages.length - 1], isResult = groq ? last.role === "tool" : Array.isArray(last.content);
+    const userTexts = body.messages.filter((m) => m.role === "user" && typeof m.content === "string").map((m) => m.content), t = userTexts[userTexts.length - 1] || "";
     if (t.includes("BOOM")) return send({error: "x"}, 500);
-    if (t.includes("LOOP")) return tool("get_fee_quote", {from: "Mombasa", to: "Diani"});
-    if (t.includes("FEE")) return tool("get_fee_quote", {from: "Mombasa", to: "Diani", weight: 0, speed: "standard"});
-    if (t.includes("ORDERS")) return tool("my_orders", {});
-    if (t.includes("TRACK")) return tool("track_order", {id: t.split("TRACK ")[1]});
-    if (t.includes("BADDRAFT")) return tool("draft_order", {from: "Mombasa", shop: "Duka", to: "Diani", drop: "Beach Rd", item: "Rice", weight: 0, speed: "standard", recipient_name: "Amina", recipient_phone: "12345"});
-    if (t.includes("DRAFT")) return tool("draft_order", {from: "Mombasa", shop: "Sample Supermarket", to: "Diani", drop: "Sea Lodge Road, blue gate", item: "Groceries", weight: 1, speed: "express", recipient_name: "Amina Hassan", recipient_phone: "0722 111 222"});
-    if (t.includes("FORBIDDEN")) return tool("admin_money", {});
-    if (t.includes("SHOPS")) return tool("find_shops", {area: "diani"});
-    if (t.includes("JOBS")) return tool("open_jobs", {});
-    if (t.includes("EARN")) return tool("my_earnings", {});
-    if (t.includes("STATUS")) return tool("my_status", {});
-    if (t.includes("MYSHOP")) return tool("my_shop", {});
-    send({stop_reason: "end_turn", content: [{type: "text", text: "Hello from the fake model"}]});
+    if (t.includes("LIMITME") && raw.model === "openai/gpt-oss-120b") return send({error: "rate"}, 429);
+    if (t.includes("LIMITALL")) return send({error: "rate"}, 429);
+    if (isResult) { /* round two: echo what the server fed back from the tool */
+      if (userTexts.some((x) => x.includes("LOOP"))) return call("get_fee_quote", {from: "Mombasa", to: "Diani"});
+      const content = groq ? body.messages.filter((m) => m.role === "tool").map((m) => m.content).join("|") : last.content.map((c) => c.content).join("|");
+      return reply("TOOLRESULT:" + content);
+    }
+    if (t.includes("LOOP")) return call("get_fee_quote", {from: "Mombasa", to: "Diani"});
+    if (t.includes("BADARGS")) return call("get_fee_quote", {}, true);
+    if (t.includes("FEE")) return call("get_fee_quote", {from: "Mombasa", to: "Diani", weight: 0, speed: "standard"});
+    if (t.includes("ORDERS")) return call("my_orders", {});
+    if (t.includes("TRACK")) return call("track_order", {id: t.split("TRACK ")[1]});
+    if (t.includes("BADDRAFT")) return call("draft_order", {from: "Mombasa", shop: "Duka", to: "Diani", drop: "Beach Rd", item: "Rice", weight: 0, speed: "standard", recipient_name: "Amina", recipient_phone: "12345"});
+    if (t.includes("DRAFT")) return call("draft_order", {from: "Mombasa", shop: "Sample Supermarket", to: "Diani", drop: "Sea Lodge Road, blue gate", item: "Groceries", weight: 1, speed: "express", recipient_name: "Amina Hassan", recipient_phone: "0722 111 222"});
+    if (t.includes("FORBIDDEN")) return call("admin_money", {});
+    if (t.includes("SHOPS")) return call("find_shops", {area: "diani"});
+    if (t.includes("JOBS")) return call("open_jobs", {});
+    if (t.includes("EARN")) return call("my_earnings", {});
+    if (t.includes("STATUS")) return call("my_status", {});
+    if (t.includes("MYSHOP")) return call("my_shop", {});
+    reply("Hello from the fake model");
   });
 });
 
@@ -67,13 +77,13 @@ const lastSeen = () => seen[seen.length - 1];
 
 (async () => {
   await new Promise((r) => fake.listen(0, "127.0.0.1", r));
-  const FAKE = "http://127.0.0.1:" + fake.address().port + "/v1/messages";
-  const env = {ANTHROPIC_API_KEY: "test-key", ANTHROPIC_API_URL: FAKE, CHAT_RATE_LIMIT: "500", CHAT_DAILY_LIMIT: "500", CHAT_DAILY_LIMIT_ANON: "500", CHAT_GLOBAL_DAILY: "5000", SUPPORT_EMAIL: "help@example.org"};
+  const HOST = "http://127.0.0.1:" + fake.address().port, GROQ = HOST + "/openai/v1/chat/completions", ANTH = HOST + "/v1/messages";
+  const env = {GROQ_API_KEY: "gsk-test", GROQ_API_URL: GROQ, ANTHROPIC_API_KEY: "", CHAT_PROVIDER: "", CHAT_MODEL: "", CHAT_RATE_LIMIT: "500", CHAT_DAILY_LIMIT: "500", CHAT_DAILY_LIMIT_ANON: "500", CHAT_GLOBAL_DAILY: "5000", SUPPORT_EMAIL: "help@example.org"};
   const S = await start(env), V = new Agent(S.base);
   let r, n;
 
   console.log("Switched off without a key");
-  const off = await start({ANTHROPIC_API_KEY: "", ANTHROPIC_API_URL: FAKE}), O = new Agent(off.base);
+  const off = await start({GROQ_API_KEY: "", ANTHROPIC_API_KEY: "", GROQ_API_URL: GROQ}), O = new Agent(off.base);
   r = await O.call("GET", "/api/config"); ok(r.j.chat === false, "config says the assistant is off");
   r = await O.chat("hello"); ok(r.s === 503, "chat answers 503 when no key is set");
 
@@ -81,10 +91,10 @@ const lastSeen = () => seen[seen.length - 1];
   r = await V.call("GET", "/api/config"); ok(r.j.chat === true, "config says the assistant is on");
   n = seen.length; r = await V.chat("Hello, how does SMD work? SECRETWORD");
   ok(r.s === 200 && r.j.reply === "Hello from the fake model" && r.j.draft == null, "a visitor gets an answer");
-  ok(seen[n].key === "test-key" && seen[n].ver === "2023-06-01", "the key is sent to the model API only in its header");
+  ok(seen[n].key === "gsk-test" && seen[n].groq, "Groq is the provider, and the key is sent only in the Authorization header");
   ok(JSON.stringify(toolsOf(n)) === JSON.stringify(["get_fee_quote"]), "a visitor only has the public fee quote tool");
   ok(/visitor/.test(seen[n].body.system) && /help@example\.org/.test(seen[n].body.system), "the model is told it is a visitor and given the support email");
-  ok(seen[n].body.max_tokens <= 800 && seen[n].body.model === "claude-haiku-5-5", "replies are capped and use the configured model");
+  ok(seen[n].body.max_tokens <= 1500 && seen[n].body.model === "openai/gpt-oss-120b" && seen[n].body.raw.reasoning_effort === "low", "replies are capped, and the first model in the list is used with low reasoning effort");
   r = await V.chat("FEE please"); const want = C.quote("Mombasa", "Diani", 0, "standard", null).total;
   ok(r.s === 200 && r.j.reply.includes('"total":' + want), "the quote comes from the real pricing code (KES " + want + ")");
 
@@ -147,6 +157,18 @@ const lastSeen = () => seen[seen.length - 1];
   ok(JSON.stringify(toolsOf(n)) === JSON.stringify(["get_fee_quote", "my_shop"]) && /"name":"Mama Njeri Stores"/.test(r.j.reply), "an owner can ask about their own shop");
   r = await OW.chat("ORDERS"); ok(/not available/.test(r.j.reply), "an owner cannot read sender orders");
   n = seen.length; await adm.chat("hello"); ok(JSON.stringify(toolsOf(n)) === JSON.stringify(["get_fee_quote"]), "admins get no account tools in chat");
+
+  console.log("Providers and fallback");
+  n = seen.length; fakeCalls = 0; r = await V.chat("LIMITME please");
+  ok(r.s === 200 && r.j.reply === "Hello from the fake model" && fakeCalls === 2 && seen[n + 1].body.model === "llama-3.3-70b-versatile" && seen[n + 1].body.raw.reasoning_effort === undefined, "when the first model is rate-limited the next one answers");
+  r = await V.chat("LIMITALL"); ok(r.s === 502 && /busy/.test(r.j.error), "when every model is rate-limited people see a friendly busy message");
+  r = await V.chat("BADARGS"); ok(r.s === 200 && /Unknown area/.test(r.j.reply), "a tool call with broken JSON arguments does not crash the chat");
+  n = seen.length; await A.chat("FEE now"); const tc = seen.slice(n).find((x) => x.body.messages.some((m) => m.role === "tool")); ok(tc && tc.body.raw.messages.some((m) => m.role === "assistant" && m.tool_calls && m.tool_calls[0].function.name === "get_fee_quote" && typeof m.tool_calls[0].function.arguments === "string"), "tool calls and results are passed back in the Groq format");
+  const AN = await start({...env, GROQ_API_KEY: "", ANTHROPIC_API_KEY: "ak-test", ANTHROPIC_API_URL: ANTH}), ANV = new Agent(AN.base);
+  r = await ANV.call("GET", "/api/config"); ok(r.j.chat === true, "an Anthropic key alone also switches the chat on");
+  n = seen.length; r = await ANV.chat("FEE now"); ok(r.s === 200 && r.j.reply.includes('"total":' + want) && seen[n].key === "ak-test" && !seen[n].groq && seen[n].body.model === "claude-haiku-5-5", "the Anthropic option still works end to end");
+  const BO = await start({...env, ANTHROPIC_API_KEY: "ak-test", ANTHROPIC_API_URL: ANTH}), BOV = new Agent(BO.base);
+  n = seen.length; await BOV.chat("hello"); ok(seen[n].groq, "with both keys set, Groq is used");
 
   console.log("Failures and limits");
   fakeCalls = 0; r = await V.chat("LOOP"); ok(r.s === 200 && /too many steps/.test(r.j.reply) && fakeCalls === 5, "a model stuck calling tools is stopped after 5 rounds");

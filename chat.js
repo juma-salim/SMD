@@ -6,9 +6,20 @@
    - The model can only DRAFT an order. The person reviews it on the normal order screen and sends and pays there, so a trick in a message cannot spend money.
    - Messages are not stored. Only a per-day usage counter is kept (to stop abuse and runaway cost). */
 
-const API_URL = () => process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages";
-const MODEL = () => process.env.CHAT_MODEL || "claude-haiku-5-5";
-const enabled = () => !!process.env.ANTHROPIC_API_KEY;
+/* Provider: Groq (default when GROQ_API_KEY is set) or Anthropic (when only ANTHROPIC_API_KEY is set). CHAT_PROVIDER can force one. */
+const provider = () => {
+  const f = String(process.env.CHAT_PROVIDER || "").toLowerCase();
+  if (f === "groq" && process.env.GROQ_API_KEY) return "groq";
+  if (f === "anthropic" && process.env.ANTHROPIC_API_KEY) return "anthropic";
+  return process.env.GROQ_API_KEY ? "groq" : process.env.ANTHROPIC_API_KEY ? "anthropic" : "";
+};
+const enabled = () => provider() !== "";
+/* Models are tried in order: Groq limits are per model, so when one is rate-limited the next one answers. */
+const models = () => {
+  const list = String(process.env.CHAT_MODEL || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return list.length ? list : provider() === "anthropic" ? ["claude-haiku-5-5"] : ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"];
+};
+const API_URL = () => (provider() === "anthropic" ? process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages" : process.env.GROQ_API_URL || "https://api.groq.com/openai/v1/chat/completions");
 const MAX_MSGS = 20, MAX_LEN = 1000, MAX_ROUNDS = 5;
 const STEPS = ["Pending (waiting for a shipper)", "In progress", "Completed"];
 
@@ -151,18 +162,52 @@ function create(d) { /* d: {q, C, feeFor, catalog, ledger, shipperMoney, stats, 
     ].filter(Boolean).join("\n\n");
   };
 
-  /* One call to the model API. */
-  async function callModel(body) {
-    const r = await fetch(API_URL(), {method: "POST", headers: {"content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"}, body: JSON.stringify(body), signal: AbortSignal.timeout(30000)});
+  /* One call to the model API. The conversation is kept in Anthropic block form; for Groq it is translated to the OpenAI-style format and back. */
+  const toGroq = (system, convo) => {
+    const m = [{role: "system", content: system}];
+    for (const x of convo) {
+      if (typeof x.content === "string") { m.push({role: x.role, content: x.content}); continue; }
+      if (x.role === "assistant") {
+        const text = x.content.filter((b) => b.type === "text").map((b) => b.text).join("\n"), calls = x.content.filter((b) => b.type === "tool_use");
+        m.push({role: "assistant", content: text || null, tool_calls: calls.map((c) => ({id: c.id, type: "function", function: {name: c.name, arguments: JSON.stringify(c.input || {})}}))});
+      } else for (const r of x.content) m.push({role: "tool", tool_call_id: r.tool_use_id, content: r.content});
+    }
+    return m;
+  };
+  const fromGroq = (res) => {
+    const ch = res && res.choices && res.choices[0], msg = (ch && ch.message) || {}, content = [];
+    if (msg.content) content.push({type: "text", text: String(msg.content)});
+    for (const c of msg.tool_calls || []) {
+      let input = {}; try { input = JSON.parse((c.function && c.function.arguments) || "{}"); } catch (e) { input = {}; }
+      content.push({type: "tool_use", id: c.id, name: c.function && c.function.name, input: input && typeof input === "object" ? input : {}});
+    }
+    return {stop_reason: content.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", content};
+  };
+  async function post(model, system, tools, convo) {
+    const groq = provider() === "groq";
+    const body = groq
+      ? {model, messages: toGroq(system, convo), max_completion_tokens: 1200, temperature: 0.3, ...(tools.length ? {tools: tools.map((t) => ({type: "function", function: {name: t.name, description: t.description, parameters: t.input_schema}})), tool_choice: "auto"} : {}), ...(/^openai\/gpt-oss/.test(model) ? {reasoning_effort: "low"} : {})}
+      : {model, max_tokens: 700, system, tools: tools.length ? tools : undefined, messages: convo};
+    const headers = groq ? {"content-type": "application/json", authorization: "Bearer " + process.env.GROQ_API_KEY} : {"content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"};
+    const r = await fetch(API_URL(), {method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000)});
     if (!r.ok) { const e = new Error("model API " + r.status); e.status = r.status; throw e; }
-    return r.json();
+    const j = await r.json();
+    return groq ? fromGroq(j) : j;
+  }
+  async function callModel(system, tools, convo) {
+    const list = models(); let last;
+    for (const m of list) {
+      try { return await post(m, system, tools, convo); }
+      catch (e) { last = e; if (!(e.status === 429 || e.status === 400 || e.status >= 500 || e.name === "TimeoutError")) throw e; } /* rate limited, malformed tool call or provider hiccup: try the next model */
+    }
+    throw last;
   }
 
   async function reply(u, messages) {
     const names = toolsFor(u), tools = names.map((n) => ({name: n, ...T[n]})), ctx = {draft: null};
     const convo = messages.map((m) => ({role: m.role, content: m.content}));
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const res = await callModel({model: MODEL(), max_tokens: 700, system: system(u), tools: tools.length ? tools : undefined, messages: convo});
+      const res = await callModel(system(u), tools, convo);
       const blocks = Array.isArray(res.content) ? res.content : [];
       const uses = blocks.filter((b) => b.type === "tool_use");
       if (res.stop_reason !== "tool_use" || !uses.length) {
@@ -184,4 +229,4 @@ function create(d) { /* d: {q, C, feeFor, catalog, ledger, shipperMoney, stats, 
   return {reply};
 }
 
-module.exports = {create, enabled, cleanMessages, limits, today};
+module.exports = {create, enabled, provider, models, cleanMessages, limits, today};
