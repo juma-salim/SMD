@@ -9,6 +9,7 @@ const {promisify} = require("node:util");
 const {createClient} = require("@libsql/client");
 const C = require("./config");
 const M = require("./mpesa");
+const CHAT = require("./chat");
 
 const PROD = process.env.NODE_ENV === "production";
 const PORT = +process.env.PORT || 3000;
@@ -63,6 +64,8 @@ CREATE TABLE IF NOT EXISTS sub_areas(uid INTEGER NOT NULL, area TEXT NOT NULL, P
 /* Browser push subscriptions of shippers (one row per device) */
 CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, uid INTEGER NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ps_uid ON push_subs(uid);
+/* Assistant usage counters only (per person or address per day). Chat messages themselves are never stored. */
+CREATE TABLE IF NOT EXISTS chat_usage(k TEXT PRIMARY KEY, day TEXT NOT NULL, n INTEGER NOT NULL);
 /* Admin-set delivery fee for one pair of places (a|b stored in sorted order, so Likoni->Mombasa and Mombasa->Likoni share one fee) */
 CREATE TABLE IF NOT EXISTS fees(a TEXT NOT NULL, b TEXT NOT NULL, fee INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(a,b));
 CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, delivery_id TEXT NOT NULL, uid INTEGER NOT NULL, phone TEXT NOT NULL, amount INTEGER NOT NULL,
@@ -171,7 +174,7 @@ const guard = async (k) => { const l = await locked(k); if (l) bad("Too many att
 
 /* ---------- Sessions (opaque random token in an HttpOnly cookie; only its hash is stored) ---------- */
 /* Version of the Terms of Use + Privacy Policy that people must have accepted. Change it when the legal text changes materially: everyone is asked to accept again. */
-const CONSENT_VER = "2026-10";
+const CONSENT_VER = "2026-11";
 const COOKIE = "smd_sid";
 function readCookie(req) { const m = (req.headers.cookie || "").split(/;\s*/).find((c) => c.startsWith(COOKIE + "=")); return m ? m.slice(COOKIE.length + 1) : ""; }
 async function login(res, uid) {
@@ -351,7 +354,7 @@ const legalPage = (file) => (req, res, next) => {
     const t = fs.readFileSync(path.join(__dirname, "legal", file), "utf8");
     const mail = String(process.env.SUPPORT_EMAIL || "").trim(), esc = (x) => x.replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
     const contact = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(mail) ? '<a href="mailto:' + esc(mail) + '">' + esc(mail) + "</a>" : "the contact email on our Google Play listing";
-    res.type("html").send(t.replace(/{{CONTACT}}/g, contact).replace(/{{DATE}}/g, "October 2026"));
+    res.type("html").send(t.replace(/{{CONTACT}}/g, contact).replace(/{{DATE}}/g, "November 2026"));
   } catch (e) { next(e); }
 };
 app.get(["/privacy", "/privacy-policy", "/terms", "/terms-and-privacy"], legalPage("terms.html"));
@@ -382,7 +385,7 @@ api.use((req, res, next) => {
 const authLimit = rateLimit({windowMs: 60000, limit: +process.env.AUTH_RATE_LIMIT || 20, standardHeaders: true, legacyHeaders: false, message: {error: "Too many attempts. Please wait a minute."}});
 const wrap = (f) => (req, res, next) => Promise.resolve(f(req, res)).catch(next);
 
-api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID, mpesa: M.enabled(), FEES, DEFER_MIN: C.DEFER_MIN, push: !!webpush && !!process.env.VAPID_PUBLIC_KEY, vapid: process.env.VAPID_PUBLIC_KEY || ""}));
+api.get("/config", (req, res) => res.json({AREAS: C.AREAS, P: C.P, WT: C.WT, VEHICLES: C.VEHICLES, BOX: C.BOX, ID_TYPES: C.ID_TYPES, googleClientId: GID, mpesa: M.enabled(), FEES, DEFER_MIN: C.DEFER_MIN, chat: CHAT.enabled(), push: !!webpush && !!process.env.VAPID_PUBLIC_KEY, vapid: process.env.VAPID_PUBLIC_KEY || ""}));
 
 /* Shipper identification details (validated on the server; the ID number is normalised so one ID cannot back two accounts) */
 function idIn(b) {
@@ -1012,6 +1015,26 @@ api.post("/deliveries/:id/later", need("sender"), wrap(async (req, res) => {
 /* ---------- Admin: delivery fees between places ---------- */
 const placePairs = () => { const n = Object.keys(C.AREAS).sort((a, b) => C.AREAS[a].pos - C.AREAS[b].pos), o = []; n.forEach((a, i) => n.slice(i).forEach((b) => o.push([a, b]))); return o; };
 const feeRows = () => placePairs().map(([a, b]) => { const bs = C.routeBase(a, b), k = C.feeKey(a, b); return {a, b, auto: bs.route + bs.ferry, fee: Object.hasOwn(FEES, k) ? FEES[k] : null}; });
+/* ---------- Assistant (chat) ----------
+   Works for visitors and every signed-in role. Per-minute limit, per-day cap per person/address, and a global daily cap so cost cannot run away. */
+let chatBot = null;
+const chatLimit = rateLimit({windowMs: 60000, limit: +process.env.CHAT_RATE_LIMIT || 8, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => (req.user ? "u" + req.user.id : req.ip), message: {error: "Too many messages. Please wait a minute. / Ujumbe mwingi sana, subiri dakika moja."}});
+async function chatCount(key) {
+  await q("INSERT INTO chat_usage(k,day,n) VALUES(?,?,1) ON CONFLICT(k) DO UPDATE SET n=CASE WHEN day=excluded.day THEN n+1 ELSE 1 END, day=excluded.day").run(key, CHAT.today());
+  return Number((await q("SELECT n FROM chat_usage WHERE k=?").get(key)).n);
+}
+api.post("/chat", chatLimit, wrap(async (req, res) => {
+  if (!CHAT.enabled()) bad("The assistant is not available right now.", 503);
+  const msgs = CHAT.cleanMessages(req.body && req.body.messages);
+  if (!msgs) bad("Please send a short message (up to 1000 characters).");
+  const L = CHAT.limits(), u = req.user || null;
+  if ((await chatCount("all")) > L.all) bad("The assistant is very busy today. Please try again tomorrow. / Msaidizi ana kazi nyingi leo, jaribu kesho.", 429);
+  if ((await chatCount(u ? "u:" + u.id : "ip:" + req.ip)) > (u ? L.user : L.anon)) bad(u ? "You have reached today's chat limit. Please try again tomorrow. / Umefikia kikomo cha leo, jaribu kesho." : "Chat limit reached. Please log in or try again tomorrow. / Kikomo kimefika, ingia au jaribu kesho.", 429);
+  chatBot = chatBot || CHAT.create({q, C, feeFor, catalog, ledger, shipperMoney, stats, share: SHARE, phoneOk, supportEmail: String(process.env.SUPPORT_EMAIL || "").trim()});
+  try { res.json(await chatBot.reply(u, msgs)); }
+  catch (e) { console.error("chat failed:", e.message); bad("The assistant is busy right now. Please try again. / Msaidizi yuko busy, jaribu tena.", 502); }
+}));
+
 api.get("/admin/fees", need("admin"), wrap(async (req, res) => res.json({fees: feeRows(), note: "Fee for one trip before weight surcharge and express."})));
 api.put("/admin/fees", need("admin"), wrap(async (req, res) => {
   const b = req.body || {};

@@ -47,9 +47,9 @@ const delivery = (extra) => Object.assign({from: "Mombasa", to: "Diani", shop: "
   r = await A.call("POST", "/api/auth/signup", sig("c1@x.co")); ok(r.s === 400 && /Terms of Use/.test(r.j.error), "sign-up without consent is refused");
   r = await A.call("POST", "/api/auth/signup", sig("c1@x.co", {consent: "yes"})); ok(r.s === 400, "consent must be exactly true");
   r = await A.call("POST", "/api/auth/signup", sig("c1@x.co", {consent: true})); ok(r.s === 201, "sign-up with consent works");
-  r = await A.call("POST", "/api/auth/verify", {email: "c1@x.co", code: await codeFor("c1@x.co")}); ok(r.s === 200 && r.j.user.needConsent === false && r.j.user.consentVer === "2026-10", "new account is on the current version");
+  r = await A.call("POST", "/api/auth/verify", {email: "c1@x.co", code: await codeFor("c1@x.co")}); ok(r.s === 200 && r.j.user.needConsent === false && r.j.user.consentVer === "2026-11", "new account is on the current version");
   const db = new DatabaseSync(path.join(dir, "t.db")); const row = db.prepare("SELECT consent_at, consent_ver FROM users WHERE email='c1@x.co'").get();
-  ok(row.consent_ver === "2026-10" && Math.abs(row.consent_at - Date.now()) < 60000, "the date and version of the consent are recorded");
+  ok(row.consent_ver === "2026-11" && Math.abs(row.consent_at - Date.now()) < 60000, "the date and version of the consent are recorded");
   r = await new Agent().call("POST", "/api/auth/signup", shipSig("c2@x.co", {consent: true})); ok(r.s === 400 && /ID/.test(r.j.error), "a shipper must also give the separate ID consent");
   r = await new Agent().call("POST", "/api/auth/signup", shipSig("c2@x.co", {consent: true, idConsent: false})); ok(r.s === 400, "ID consent must be exactly true");
   r = await new Agent().call("POST", "/api/auth/signup", shipSig("c2@x.co", {consent: true, idConsent: true})); ok(r.s === 201, "a shipper with both consents signs up");

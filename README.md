@@ -109,3 +109,16 @@ Admin > Money shows what you owe each shipper and shop, lets you record payouts 
 
 ## Terms of Use and Privacy Policy
 One combined page, `legal/terms.html`, is served at `/terms` (and `/privacy`, `/privacy-policy`, `/terms-and-privacy`, so your Play Store privacy link keeps working). Sign-up requires ticking the agreement; shippers must also tick a separate consent for ID verification. The date and version accepted are saved. When you change the legal text in a way that matters, raise `CONSENT_VER` in `server.js`: everyone is then asked to accept again before using the app. Set `SUPPORT_EMAIL` so the contact line shows your address. Have a Kenyan lawyer review the text before launch.
+
+
+## SMD assistant (chat)
+
+A chat button (💬 Help) appears in the app when `ANTHROPIC_API_KEY` is set on the server. It answers in English or Kiswahili.
+
+- **Visitors**: general questions and fee quotes. No account data.
+- **Senders**: also their own orders and tracking, shop search, and **order drafts**. The assistant never places or pays for an order: it fills in the normal order screen and the person taps Send there.
+- **Shippers**: open jobs (no personal details), their own jobs, earnings, rating, and verification status.
+- **Shop owners**: their own shop, goods and amounts owed.
+
+Safety: every tool runs on the server for the signed-in person only, returns no phone numbers, emails or ID details, and chat messages are not stored (only a per-day message count). Limits per minute, per person per day, and a global daily cap (`CHAT_GLOBAL_DAILY`) keep cost under control. The Terms and Privacy Policy name the AI provider; people are asked to accept the updated version once.
+Test: `node test-chat.js` (uses a fake model, no key or cost).

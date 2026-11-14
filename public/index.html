@@ -230,6 +230,14 @@
   <div class="err" id="cbErr" role="alert"></div>
   <button class="btn" id="cbOk">Agree and continue</button><button class="btn sec" id="cbOut">Log out</button>
 </div></div>
+<button id="chatFab" class="chatfab" style="display:none" aria-label="Chat with the SMD assistant"><span aria-hidden="true">💬</span> Help</button>
+<div id="chatBox" class="chatbox" role="dialog" aria-modal="true" aria-labelledby="chatT" style="display:none">
+  <div class="chead"><b id="chatT">SMD assistant</b><button type="button" id="chatX" aria-label="Close chat">✕</button></div>
+  <div id="chatLog" class="clog" aria-live="polite"></div>
+  <div id="chatSug" class="csug"></div>
+  <form id="chatForm" class="cform"><input id="chatIn" maxlength="1000" placeholder="Ask in English or Kiswahili…" aria-label="Your message" autocomplete="off"><button class="btn" id="chatSend" type="submit">Send</button></form>
+  <p class="note cnote">AI assistant: it can make mistakes. Never share passwords, PINs or ID numbers. Messages are processed by our AI provider and not saved. <a href="/terms" target="_blank" rel="noopener">Privacy</a></p>
+</div>
 <div class="toast" id="toast"></div>
 
 <script src="/app.js"></script>

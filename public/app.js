@@ -1,6 +1,6 @@
 (function(){
 "use strict";
-var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],PUSH=false,VAPID="",seenJobs=null,GOOGLE_CLIENT_ID="",MPESA=false,FEES={},DEFER_MIN=999,payMethod="mpesa",payPoll=null;
+var AREAS,SHOPS,P,WT,VEHICLES,BOX,ID_TYPES=[],PUSH=false,VAPID="",seenJobs=null,GOOGLE_CLIENT_ID="",MPESA=false,CHAT=false,FEES={},DEFER_MIN=999,payMethod="mpesa",payPoll=null;
 var STEPS=["Pending","In Progress","Completed"],OTHER="__other__";
 var speed="standard",mode="login",role="sender",me=null,busy=false,pins={pick:null,drop:null},myShops=[],cache={mine:[],jobs:[],jm:[]},pendingG=null,resendAt=0,adminTab="pending",docVer={},catalog=[],cart={},cartShop=null,lastQ=null,shopOpen={},adminShops=[];
 function $(i){return document.getElementById(i)}
@@ -24,7 +24,7 @@ function api(method,path,body){
 function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
 function resetLocal(){me=null;seenJobs=null;$("a-agree").checked=false;$("a-idc").checked=false;$("consentBox").style.display="none";myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
   ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
-  pins.pick=null;pins.drop=null;setRole("sender");setMode("login");show("auth")}
+  pins.pick=null;pins.drop=null;chatReset();setRole("sender");setMode("login");show("auth")}
 
 /* Map */
 function order(){return Object.keys(AREAS).sort(function(a,b){return AREAS[a].pos-AREAS[b].pos})}
@@ -139,7 +139,7 @@ $("aBtn").addEventListener("click",function(){
   req.then(function(j){if(j.needsVerify)return toVerify(j.email,"We sent a 6-digit code to "+j.email+". Enter it to continue.");start(j.user)})
     .catch(function(e){if(e.data&&e.data.needsVerify)return toVerify(e.data.email||em,e.message);fl(e)})});
 function start(u,shops){
-  me=u;if(u.needConsent)showConsent();myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop"].forEach(function(i){$(i).value=""});navFor(u);
+  chatReset();me=u;if(u.needConsent)showConsent();myShops=shops||[];busy=false;$("aBtn").disabled=false;["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop"].forEach(function(i){$(i).value=""});navFor(u);
   var f=u.name.split(" ")[0];$("hi").textContent="Hi, "+f+"!";$("hj").textContent="Hi, "+f+"!";
   if(u.role==="sender"){initPins();if(!shops)api("GET","/me").then(function(j){myShops=j.shops;fillShops()},function(){});fillShops();loadCatalog()}else if(u.role==="shipper"){$("jf").value=u.area||"all";pushSync();watchStart()}
   go(u.role==="admin"||u.role==="subadmin"?"admin":u.role==="owner"?"owner":u.role==="shipper"?"jobs":"home")}
@@ -563,8 +563,38 @@ setInterval(function(){if(!me||document.hidden||busy)return;var v=document.query
 /* Boot */
 function init(){document.querySelector("header small").textContent=order().join(" \u00b7 ");fill();drawMap($("homeMap"));drawMap($("authMap"));setMode("login");slg();loadG();
   api("GET","/me").then(function(j){start(j.user,j.shops)},function(){show("auth")})}
+/* Assistant chat. The conversation lives only in this page: it is not saved on the phone or the server. */
+var chatMsgs=[],chatWait=false;
+function chatReset(){chatMsgs=[];chatWait=false;var l=$("chatLog");if(l)l.textContent="";var b=$("chatBox");if(b)b.style.display="none"}
+function chatScroll(){var l=$("chatLog");l.scrollTop=l.scrollHeight}
+function chatAdd(cls,text){var m=el("div","cm "+cls,text);$("chatLog").appendChild(m);chatScroll();return m}
+function chatSuggest(){var box=$("chatSug");box.textContent="";if(chatMsgs.length)return;var r=me?me.role:"";
+  var l=r==="shipper"?["How much have I earned?","What is my verification status?"]:r==="owner"?["How do I add my goods?","When do I get paid?"]:r==="sender"?["I want to send a parcel","Where is my order?","Bei ya Mombasa hadi Diani?"]:["How does SMD work?","Bei ya kutuma Mombasa hadi Diani?"];
+  l.forEach(function(t){var b=el("button",null,t);b.type="button";b.addEventListener("click",function(){chatSend(t)});box.appendChild(b)})}
+function chatOpen(){$("chatBox").style.display="flex";$("chatFab").style.display="none";
+  if(!$("chatLog").children.length)chatAdd("a","Hi"+(me?" "+me.name.split(" ")[0]:"")+"! I can help with orders, fees, tracking and your account. Habari! Niulize chochote kuhusu SMD.");
+  chatSuggest();$("chatIn").focus()}
+function chatClose(){$("chatBox").style.display="none";$("chatFab").style.display=CHAT?"block":"none"}
+function setDraft(d){$("from").value=d.from;fillShops();var s=$("shopSel"),want=String(d.shop).toLowerCase(),f=Array.prototype.filter.call(s.options,function(o){return o.value!==OTHER&&o.text.replace("⭐ ","").toLowerCase()===want})[0];
+  if(f)s.value=f.value;else{s.value=OTHER;$("shopOther").value=d.shop}
+  shopToggle();$("to").value=d.to;$("drop").value=d.drop;$("it").value=d.it;$("wt").value=String(d.w);$("rn").value=d.rn;$("rp").value=d.rp;
+  speed=d.s==="express"?"express":"standard";document.querySelectorAll("#spd button").forEach(function(x){x.classList.toggle("on",x.dataset.s===speed)});
+  updatePrice();window.scrollTo(0,0);toast("Details filled in. Check them, then tap Send.")}
+function applyDraft(d){if(!me||me.role!=="sender")return;chatClose();go("new");loadCatalog().then(function(){setDraft(d)},function(){setDraft(d)})}
+function chatDraft(d,m){var c=el("div","cd"),w=WT[d.w]?WT[d.w].l:"";
+  c.appendChild(el("b",null,"Draft request"));c.appendChild(el("div",null,d.from+" → "+d.to+" · "+d.shop));c.appendChild(el("div",null,d.it+" · "+w+" · "+(d.s==="express"?"Express":"Standard")));c.appendChild(el("div",null,"For "+d.rn+", "+d.drop));
+  var b=el("button","btn","Review & order");b.type="button";b.addEventListener("click",function(){applyDraft(d)});c.appendChild(b);m.appendChild(c);chatScroll()}
+function chatSend(text){text=String(text||"").trim();if(!text||chatWait)return;chatWait=true;$("chatSend").disabled=true;$("chatIn").value="";$("chatSug").textContent="";
+  chatMsgs.push({role:"user",content:text});chatAdd("u",text);var wait=chatAdd("a typing","…");
+  api("POST","/chat",{messages:chatMsgs.slice(-20)}).then(function(j){wait.remove();chatMsgs.push({role:"assistant",content:j.reply});var m=chatAdd("a",j.reply);if(j.draft&&me&&me.role==="sender")chatDraft(j.draft,m)},
+    function(e){wait.remove();chatMsgs.pop();$("chatIn").value=text;chatAdd("a err",e.message||"Something went wrong. Please try again.")})
+  .then(function(){chatWait=false;$("chatSend").disabled=false;$("chatIn").focus()})}
+$("chatFab").addEventListener("click",chatOpen);$("chatX").addEventListener("click",chatClose);
+$("chatForm").addEventListener("submit",function(e){e.preventDefault();chatSend($("chatIn").value)});
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&$("chatBox").style.display!=="none")chatClose()});
+
 fetch("/api/config",{credentials:"same-origin"}).then(function(r){return r.json()}).then(function(c){
-  MPESA=!!c.mpesa;PUSH=!!c.push;VAPID=c.vapid||"";FEES=c.FEES||{};DEFER_MIN=c.DEFER_MIN||999;AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
+  MPESA=!!c.mpesa;CHAT=!!c.chat;$("chatFab").style.display=CHAT?"block":"none";PUSH=!!c.push;VAPID=c.vapid||"";FEES=c.FEES||{};DEFER_MIN=c.DEFER_MIN||999;AREAS=c.AREAS;SHOPS=c.SHOPS;P=c.P;WT=c.WT;VEHICLES=c.VEHICLES;BOX=c.BOX;ID_TYPES=c.ID_TYPES||[];GOOGLE_CLIENT_ID=c.googleClientId||"";init()})
   .catch(function(){document.querySelector(".wrap").prepend(el("div","card empty","Cannot reach the SMD server. Please refresh."))});
 /* Admin: delivery fees between places */
 function renderFees(){return api("GET","/admin/fees").then(function(j){drawFees(j.fees)},function(e){toast(e.message)})}
