@@ -27,7 +27,15 @@ Change a value, then **Sync Now**, run **Build > Clean Project**, and run again 
   Your real https URL needs nothing special.
 - Debug builds allow plain http (see `app/src/debug/res/xml/network_security_config.xml`). Release builds never do.
 
-## Release build
+## Release build (Google Play)
+
+The project targets **Android 16 (API 36)**, which Google Play requires for new apps and updates. It needs Android Studio with the Android SDK 36 platform installed (SDK Manager > SDK Platforms > Android 16), JDK 17, Gradle 8.13 and Android Gradle Plugin 8.13 (already set). If Studio offers the *AGP Upgrade Assistant*, accepting its suggestions is fine.
+
+The app draws edge to edge (required at this API level); `MainActivity` pads the page so it never sits under the status bar, navigation bar or keyboard.
+
+`SMD_RELEASE_URL` in `gradle.properties` must be your live https address (set to `https://smd-d7uf.onrender.com`).
+
+Each new upload to Google Play needs a higher `versionCode` in `app/build.gradle.kts` (1, then 2, 3...).
 
 **Build > Generate Signed App Bundle / APK**, create a keystore, and **back it up** (losing it means you can never update the app on Google Play). Keep `*.jks` out of version control.
 
@@ -41,9 +49,9 @@ Change a value, then **Sync Now**, run **Build > Clean Project**, and run again 
 ## Known limits
 
 - **"Continue with Google" will not work inside this app**: Google blocks sign-in inside embedded WebViews. Email + password works. Leave `GOOGLE_CLIENT_ID` unset on the server for now, which hides the button. Native Google sign-in can be added later.
-- No push notifications yet (the app refreshes jobs every 15 s while open).
+- No push notifications inside this app yet (the app refreshes jobs every 15 s while open).
 - There is no Gradle wrapper script (`gradlew`); Android Studio handles Gradle for you.
-- This project was written without an Android SDK available, so it has not been compiled yet. If Gradle sync or the build shows an error, send me the exact text and I'll fix it.
+- This project was written without an Android SDK available, so it has not been compiled by me. If Gradle sync or the build shows an error, send me the exact text and I'll fix it.
 
 ## Troubleshooting: "Can't reach the SMD server"
 

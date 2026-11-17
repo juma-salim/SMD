@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.smd.deliveries"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.smd.deliveries"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
     }
@@ -35,6 +35,7 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.activity:activity-ktx:1.10.1")
 }

@@ -3,6 +3,5 @@
         <item name="colorPrimary">#FF6B00</item>
         <item name="colorPrimaryDark">#14213D</item>
         <item name="colorAccent">#FF6B00</item>
-        <item name="android:statusBarColor">#14213D</item>
     </style>
 </resources>
