@@ -170,6 +170,18 @@ const lastSeen = () => seen[seen.length - 1];
   const BO = await start({...env, ANTHROPIC_API_KEY: "ak-test", ANTHROPIC_API_URL: ANTH}), BOV = new Agent(BO.base);
   n = seen.length; await BOV.chat("hello"); ok(seen[n].groq, "with both keys set, Groq is used");
 
+  console.log("Reporting an answer");
+  r = await V.call("POST", "/api/chat/report", {q: "How much?", a: "A wrong answer", note: "price was wrong"}); ok(r.s === 200, "a visitor can report an answer");
+  r = await A.call("POST", "/api/chat/report", {q: "Where is my order?", a: "Unsure"}); ok(r.s === 200, "a signed-in user can report an answer without a note");
+  for (const [label, body] of [["nothing", {}], ["no answer", {q: "x"}], ["numbers", {q: 1, a: 2}]]) { r = await V.call("POST", "/api/chat/report", body); ok(r.s === 400, "report refused: " + label); }
+  r = await V.call("POST", "/api/chat/report", {q: "x".repeat(5000), a: "y".repeat(9000), note: "n".repeat(900)}); ok(r.s === 200, "very long text is accepted but cut down");
+  r = await A.call("GET", "/api/admin/chat-reports"); ok(r.s === 403, "a sender cannot read reports");
+  r = await adm.call("GET", "/api/admin/chat-reports"); const reps = r.j.reports || [];
+  ok(r.s === 200 && reps.length === 3 && reps[0].q.length === 1000 && reps[0].a.length === 2000 && reps[0].note.length === 300, "the admin sees the reports, newest first, with text cut to the limits");
+  ok(reps.some((x) => x.role === "visitor" && x.note === "price was wrong") && reps.some((x) => x.role === "sender"), "each report records who reported it (visitor or role) and the note");
+  r = await adm.call("DELETE", "/api/admin/chat-reports/" + reps[0].id); const after = (await adm.call("GET", "/api/admin/chat-reports")).j.reports; ok(r.s === 200 && after.length === 2, "the admin can dismiss a report");
+  r = await V.call("GET", "/api/admin/chat-reports"); ok(r.s === 401 || r.s === 403, "a visitor cannot read reports");
+
   console.log("Failures and limits");
   fakeCalls = 0; r = await V.chat("LOOP"); ok(r.s === 200 && /too many steps/.test(r.j.reply) && fakeCalls === 5, "a model stuck calling tools is stopped after 5 rounds");
   r = await V.chat("BOOM"); ok(r.s === 502 && /busy/.test(r.j.error) && !/500|model API/.test(r.j.error), "a model API failure gives a friendly 502 with no internals");

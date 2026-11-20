@@ -15,14 +15,15 @@ function norm(p){return p.replace(/[\s\-()]/g,"")}
 function phoneOk(p){return /^(\+?254|0)[17]\d{8}$/.test(norm(p))}
 function emailOk(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)}
 /* Server API: session lives in an HttpOnly cookie the page cannot read */
-function api(method,path,body){
-  var opt={method:method,credentials:"same-origin",headers:{}};
+function api(method,path,body,tries){
+  tries=tries||0;var opt={method:method,credentials:"same-origin",headers:{}};
   if(method!=="GET"){opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body||{})}
   return fetch("/api"+path,opt).then(function(r){return r.json().catch(function(){return{}}).then(function(j){
     if(!r.ok){var e=new Error(j.error||"Request failed.");e.status=r.status;e.data=j;if(j.needConsent)showConsent();if(r.status===401&&me&&path.indexOf("/auth/")!==0)sessionEnded();throw e}return j})},
-    function(){throw new Error("Cannot reach the server. Check your connection.")})}
+    function(){if(method==="GET"&&tries<3)return new Promise(function(res){setTimeout(res,1500*(tries+1))}).then(function(){return api(method,path,body,tries+1)}); /* server may be waking up */
+      throw new Error("Cannot reach the server. It may be waking up: wait a few seconds and try again.")})}
 function sessionEnded(){if(!me)return;resetLocal();toast("Your session expired. Please log in again.")}
-function resetLocal(){me=null;seenJobs=null;$("a-agree").checked=false;$("a-idc").checked=false;$("consentBox").style.display="none";myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
+function resetLocal(){me=null;lastOrder=null;["rn","rp","mpPhone","drop","it","land"].forEach(function(k){var e=$(k);if(e)e.value=""});seenJobs=null;$("a-agree").checked=false;$("a-idc").checked=false;$("consentBox").style.display="none";myShops=[];cart={};cartShop=null;cache={mine:[],jobs:[],jm:[]};try{google.accounts.id.disableAutoSelect()}catch(e){}
   ["a-name","a-phone","a-email","a-pw","a-code","a-idn","a-dob","a-addr","a-shop","shopOther","land","drop","it","rn","rp","q","mpPhone"].forEach(function(i){$(i).value=""});closePay();payMethod="cod";
   pins.pick=null;pins.drop=null;chatReset();setRole("sender");setMode("login");show("auth")}
 
@@ -82,7 +83,7 @@ function go(v){if(!me){show("auth");return}
   else if(me.role==="admin"){if(v!=="admin"&&v!=="shops"&&v!=="fees"&&v!=="money"&&v!=="subs"&&v!=="set")v="admin"}
   else if(me.role==="shipper"){if(me.status!=="approved"){if(v!=="set")v="verify"}else if(SENDER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees"||v==="money"||v==="subs"||v==="owner")v="jobs"}
   else if(SHIPPER.indexOf(v)>-1||v==="verify"||v==="admin"||v==="shops"||v==="fees"||v==="money"||v==="subs"||v==="owner")v="home";
-  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops();if(v==="fees")renderFees();if(v==="owner")renderOwner();if(v==="money")renderMoney();if(v==="subs")renderSubs();if(v==="set")pushRefresh()}
+  show(v);if(v==="home")renderHome();if(v==="hist")renderList(true);if(v==="new"){loadCatalog();updatePrice();prefillOrder(false);loadLast()}if(v==="set")fillProfile();if(v==="jobs")renderJobs();if(v==="mine")renderMine();if(v==="verify")renderVerify();if(v==="admin")renderAdmin();if(v==="shops")renderShops();if(v==="fees")renderFees();if(v==="owner")renderOwner();if(v==="money")renderMoney();if(v==="subs")renderSubs();if(v==="set")pushRefresh()}
 /* bottom bar: admins see Review; shippers see Verify until an admin approves them, then Jobs */
 function navFor(u){document.querySelectorAll("#nav button[data-r]").forEach(function(b){var h=(" "+b.dataset.r+" ").indexOf(" "+u.role+" ")<0;
   if(!h&&u.role==="shipper"){var ap=u.status==="approved";h=b.dataset.go==="verify"?ap:!ap}b.classList.toggle("hide",h)})}
@@ -176,7 +177,7 @@ function nearRow(l1,l2,btn){var d=el("div","nb"),t=el("div");t.appendChild(el("b
 function loadNear(){var a=$("nbArea").value;try{localStorage.setItem("smd_area",a)}catch(e){}
   return api("GET","/nearby?area="+encodeURIComponent(a)).then(function(j){if(j.area!==$("nbArea").value)return;var sb=$("nbShops"),pb=$("nbShips");sb.textContent="";pb.textContent="";
     if(!j.shops.length)sb.appendChild(el("p","note","No recommended shops in "+a+" yet. You can still type any shop when you request a delivery."));
-    j.shops.forEach(function(s){var b=el("button","lnk","Order");b.type="button";b.onclick=function(){orderFrom(a,s.id)};sb.appendChild(nearRow(s.name,s.goods?s.goods+" goods listed":"Tell us what you need",b))});
+    j.shops.forEach(function(s){var b=el("button","lnk",s.open?"Order":"Closed");b.type="button";if(s.open)b.onclick=function(){orderFrom(a,s.id)};else b.disabled=true;var sub=(s.hoursLabel?s.hoursLabel+" · ":"")+(s.goods?s.goods+" goods listed":"Tell us what you need"),row=nearRow(s.name,sub,b);if(!s.open)row.classList.add("closed");sb.appendChild(row)});
     if(!j.shippers.length)pb.appendChild(el("p","note","No shippers are free in "+a+" right now. Requests still reach shippers from nearby areas."));
     j.shippers.forEach(function(p){var r=p.avg==null?"New · no ratings yet":null,d=nearRow(p.name,p.veh+" · "+p.done+" delivered"),st=el("div");st.style.textAlign="right";
       if(r)st.appendChild(el("small",null,"New"));else{st.appendChild(el("span","stars",starStr(p.avg)));st.appendChild(el("small",null,p.avg.toFixed(1)+" ("+p.count+")"))}d.appendChild(st);pb.appendChild(d)})},function(){})}
@@ -190,9 +191,26 @@ function ownerDraw(j){ownerShop=j.shop;var mo=j.money;$("oMoney").textContent=mo
   var tg=el("span","tag"+(sh.approved?"":" warn"),sh.approved?"✓ Live: customers can order from you":"Waiting for admin approval");
   var l=el("p","note",sh.approved?"Shop area: "+sh.area+(sh.rec?" · ⭐ Recommended by SMD":""):"Shop area: "+sh.area+". Customers cannot see your shop until an admin approves it. You can add your goods now.");
   st.appendChild(tg);st.appendChild(l);
+  hoursDraw(sh);
   var box=$("oList");box.textContent="";var ad=$("oAdd");ad.textContent="";ad.appendChild(ownerEditor(null));
   if(!sh.items.length){box.appendChild(el("div","card empty","No goods yet. Add your first one above."));return}
   var c=el("div","card");c.appendChild(el("b",null,"Your goods ("+sh.items.length+")"));sh.items.forEach(function(it){c.appendChild(ownerEditor(it))});box.appendChild(c)}
+function timeSel(v){var e=document.createElement("select"),t=[],i,h;for(i=0;i<48;i++){h=("0"+Math.floor(i/2)).slice(-2)+":"+(i%2?"30":"00");t.push(h)}if(t.indexOf(v)<0){t.push(v);t.sort()}t.forEach(function(x){e.add(new Option(x,x))});e.value=v;return e}
+var HD=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],HORDER=[1,2,3,4,5,6,0];
+function hoursDraw(sh){var c=$("oHours");c.textContent="";c.appendChild(el("b",null,"Opening hours"));
+  var cur=sh.hours,paused=!!sh.closedNow,badge=el("span","tag"+(sh.open?"":" off"),sh.hoursSet?sh.hoursLabel:"Not set: customers see you as always open");badge.style.display="inline-block";badge.style.marginTop="6px";c.appendChild(badge);
+  c.appendChild(el("p","note","Customers can only order from your shop while it is open (East Africa Time). Closing time may be after midnight, e.g. 18:00 to 02:00."));
+  var rows=[];
+  HORDER.forEach(function(d){var w=cur&&cur[d],r=el("div","hr"),on=document.createElement("input"),o,x,n=el("span",null,HD[d].slice(0,3));
+    on.type="checkbox";on.checked=cur?!!w:d!==0;on.setAttribute("aria-label",HD[d]+" open");o=timeSel(w?w[0]:"08:00");x=timeSel(w?w[1]:"20:00");o.setAttribute("aria-label",HD[d]+" opens");x.setAttribute("aria-label",HD[d]+" closes");
+    function sync(){o.disabled=x.disabled=!on.checked;r.classList.toggle("off",!on.checked)}on.onchange=sync;sync();
+    r.appendChild(on);r.appendChild(n);r.appendChild(o);r.appendChild(el("i",null,"to"));r.appendChild(x);c.appendChild(r);rows[d]={on:on,o:o,x:x}});
+  var same=el("button","btn sec","Copy Monday to all days");same.type="button";same.onclick=function(){var m=rows[1];HORDER.forEach(function(d){rows[d].on.checked=m.on.checked;rows[d].o.value=m.o.value;rows[d].x.value=m.x.value;rows[d].on.onchange()})};c.appendChild(same);
+  var lb=el("label","agree"),cb=document.createElement("input");cb.type="checkbox";cb.checked=paused;lb.appendChild(cb);lb.appendChild(el("span",null,"Closed for now (pause orders until I switch this off)"));c.appendChild(lb);
+  var save=el("button","btn","Save opening hours");save.type="button";save.style.marginTop="12px";
+  save.onclick=function(){var h={};HORDER.forEach(function(d){var r=rows[d];h[d]=r.on.checked?[r.o.value,r.x.value]:null});
+    save.disabled=true;api("PUT","/owner/hours",{hours:h,closedNow:cb.checked}).then(function(j){ownerDraw(j);toast("Opening hours saved")},function(e){save.disabled=false;toast(e.message)})};
+  c.appendChild(save)}
 function oCall(method,path,body,done){return api(method,path,body).then(function(j){ownerDraw(j);if(done)done()},function(e){toast(e.message)})}
 function ownerEditor(it){var d=el("div","ied"),r=el("div","row"),nm=el("input"),un=el("input"),pr=el("input"),r2=el("div","row"),bt=el("div","btns");
   nm.value=it?it.name:"";nm.maxLength=60;nm.placeholder="Item (e.g. Sugar)";nm.setAttribute("aria-label","Item name");
@@ -361,10 +379,17 @@ function shipperCard(s){var c=el("div","card"),top=el("div"),l=el("div");top.sty
   return c}
 function renderAdmin(auto){var box=$("alist");var hp=document.querySelector("#v-admin .hero p");if(hp)hp.textContent=me.role==="subadmin"?"You review shippers and shops in: "+(me.areas||[]).join(", ")+".":"Check each shipper's details and ID photos before they can see jobs.";renderRShops();
   if(auto&&(box.contains(document.activeElement)||box.querySelector(".docimg.big")))return; /* do not disturb a review in progress */
+  if(me.role==="admin")renderReports();
   return api("GET","/admin/shippers?status="+adminTab).then(function(j){
     document.querySelectorAll("#aTabs button").forEach(function(b){b.textContent=b.dataset.t.charAt(0).toUpperCase()+b.dataset.t.slice(1)+" ("+j.counts[b.dataset.t]+")"});
     box.textContent="";if(!j.shippers.length){box.appendChild(el("div","card empty","Nobody here right now."));return}
     j.shippers.forEach(function(s){box.appendChild(shipperCard(s))})},function(e){toast(e.message)})}
+
+/* Admin: answers people reported from the assistant chat */
+function renderReports(){var box=$("rReports");return api("GET","/admin/chat-reports").then(function(j){box.textContent="";if(!j.reports.length)return;
+  var c=el("div","card");c.appendChild(el("h3",null,"Reported assistant answers ("+j.reports.length+")"));
+  j.reports.forEach(function(r){var d=el("div","item");d.appendChild(el("div","note",new Date(r.at).toLocaleString()+" · "+r.role));d.appendChild(el("div",null,"Q: "+r.q));d.appendChild(el("div",null,"A: "+r.a));if(r.note)d.appendChild(el("div",null,"Note: "+r.note));
+    var b=el("button","btn sec","Dismiss");b.type="button";b.onclick=function(){api("DELETE","/admin/chat-reports/"+r.id).then(renderReports,function(e){toast(e.message)})};d.appendChild(b);c.appendChild(d)});box.appendChild(c)},function(){})}
 
 /* Admin: shops and price lists */
 function numIn(v){var n=Math.round(Number(v));return isFinite(n)?n:NaN}
@@ -405,11 +430,22 @@ $("ns-add").addEventListener("click",function(){var n=$("ns-name").value.trim();
 function curShop(){var v=$("shopSel").value;if(v.indexOf("c:")!==0)return null;var id=+v.slice(2);return catalog.filter(function(x){return x.id===id})[0]||null}
 function loadCatalog(){return api("GET","/shops").then(function(j){if(JSON.stringify(j)!==JSON.stringify(catalog)){catalog=j;fillShops()}},function(){})}
 function fillShops(){var a=$("from").value,s=$("shopSel"),keep=s.value;s.textContent="";
-  catalog.filter(function(x){return x.area===a}).forEach(function(x){s.add(new Option((x.rec?"⭐ ":"")+x.name,"c:"+x.id))});
+  catalog.filter(function(x){return x.area===a}).sort(function(p,q){return (q.open?1:0)-(p.open?1:0)}).forEach(function(x){var o=new Option((x.rec?"⭐ ":"")+x.name+(x.open?"":" · Closed"),"c:"+x.id);if(!x.open)o.disabled=true;s.add(o)});
   myShops.filter(function(x){return x.a===a}).forEach(function(x){s.add(new Option(x.n,"m:"+x.n))});
   s.add(new Option("✏️ Other: type a shop name",OTHER));
-  if(keep&&Array.prototype.some.call(s.options,function(o){return o.value===keep}))s.value=keep;shopToggle()}
-function shopToggle(){$("otherWrap").style.display=$("shopSel").value===OTHER?"block":"none";renderGoods()}
+  if(keep&&Array.prototype.some.call(s.options,function(o){return o.value===keep&&!o.disabled}))s.value=keep;else{var f=Array.prototype.filter.call(s.options,function(o){return !o.disabled})[0];if(f)s.value=f.value}shopToggle()}
+function shopStatus(){var cs=curShop(),p=$("shopStat");p.textContent="";p.className="shopstat";if(!cs||!cs.hoursSet&&cs.open){return}p.textContent=(cs.open?"🟢 ":"🔴 ")+cs.hoursLabel;p.classList.add(cs.open?"ok":"no")}
+function shopToggle(){shopStatus();$("otherWrap").style.display=$("shopSel").value===OTHER?"block":"none";renderGoods()}
+function whoLine(){var n=$("rn").value.trim(),p=$("rp").value.trim();$("whoLine").textContent=me&&n===me.name&&p===me.phone?"You · "+n+" · "+p:(n||"Someone")+" · "+p}
+function prefillOrder(force){if(!me)return;var rn=$("rn"),rp=$("rp");if(force||!rn.value.trim())rn.value=me.name||"";if(force||!rp.value.trim())rp.value=me.phone||"";
+  if(!$("mpPhone").value&&me.phone)$("mpPhone").value=me.phone;
+  if(!$("to").dataset.touched&&lastOrder){if(lastOrder.to)$("to").value=lastOrder.to;if(!$("drop").value&&lastOrder.drop)$("drop").value=lastOrder.drop}
+  whoLine();updatePrice()}
+var lastOrder=null;
+function loadLast(){return api("GET","/deliveries").then(function(l){var d=l&&l[0];lastOrder=d?{to:d.to,drop:d.drop}:null;prefillOrder(false)},function(){prefillOrder(false)})}
+$("whoEdit").addEventListener("click",function(){var b=$("whoBox"),open=b.style.display==="none";b.style.display=open?"block":"none";this.textContent=open?"Done":"Change";if(open)$("rn").focus();else whoLine()});
+["rn","rp"].forEach(function(i){$(i).addEventListener("input",whoLine)});
+$("to").addEventListener("change",function(){this.dataset.touched="1"});
 function cartCount(){var n=0;for(var k in cart)n+=cart[k];return n}
 function cartLines(){var cs=curShop(),o=[];if(!cs)return o;cs.items.forEach(function(i){if(cart[i.id])o.push({id:i.id,q:cart[i.id]})});return o}
 function goodsSum(){var cs=curShop(),t=0;if(cs)cs.items.forEach(function(i){t+=i.price*(cart[i.id]||0)});return t}
@@ -443,7 +479,7 @@ function fill(){var f=$("from"),t=$("to"),j=$("jf"),aa=$("a-area");order().forEa
   WT.forEach(function(w,i){$("wt").add(new Option(w.l,i))});VEHICLES.forEach(function(v){$("a-veh").add(new Option(v,v))});ID_TYPES.forEach(function(v){$("a-idt").add(new Option(v,v));$("v-idt").add(new Option(v,v))});fillShops()}
 var lastTotal=0;
 function countTo(n){var e=$("total"),s=lastTotal,st=performance.now();lastTotal=n;(function step(t){var p=Math.min(1,(t-st)/450);e.textContent=fmt(Math.round(s+(n-s)*p));if(p<1)requestAnimationFrame(step)})(st)}
-function updatePrice(){var f=$("from").value,t=$("to").value,q=quote(f,t,+$("wt").value,speed);
+function updatePrice(){var wo=WT[+$("wt").value];if(wo)$("wtSum").textContent=wo.l;var f=$("from").value,t=$("to").value,q=quote(f,t,+$("wt").value,speed);
   lastQ=q;showTotal();$("dist").textContent=f===t?"Within "+f:"≈ "+q.d+" km · "+f+" → "+t;
   var sum=q.route+q.wf+q.ex+q.ferry;[["b1",q.route],["b2",q.wf],["b3",q.ex],["b4",q.ferry]].forEach(function(r){$(r[0]).style.width=(r[1]/sum*100)+"%"});
   $("l1").textContent=q.route;$("l2").textContent=q.wf;$("l3").textContent=q.ex;$("l4").textContent=q.ferry;drawMap($("formMap"),f,t)}
@@ -459,14 +495,15 @@ $("submit").addEventListener("click",function(){
   ["drop","rn"].forEach(function(k){if($(k).value.trim().length<2)bad.push(k)});
   if(!cartCount()&&$("it").value.trim().length<2)bad.push("it");
   if(!phoneOk($("rp").value))bad.push("rp");
+  var csn=curShop();if(csn&&!csn.open){$("err").textContent="This shop is closed right now ("+csn.hoursLabel+"). Pick an open shop.";loadCatalog();return}
   var mp=MPESA&&payMethod==="mpesa",lt=MPESA&&payMethod==="later";if((mp||lt)&&!phoneOk($("mpPhone").value))bad.push("mpPhone");
-  if(bad.length){bad.forEach(function(k){$(k).classList.add("bad")});$("err").textContent="Please complete the highlighted fields. Phone looks like 0712 345 678.";$(bad[0]).focus();return}
+  if(bad.length){if(bad.indexOf("rn")>-1||bad.indexOf("rp")>-1)$("whoBox").style.display="block";bad.forEach(function(k){$(k).classList.add("bad")});$("err").textContent="Please complete the highlighted fields. Phone looks like 0712 345 678.";$(bad[0]).focus();return}
   $("err").textContent="";
   var from=$("from").value,cs=curShop(),sv=$("shopSel").value,shop=other?$("shopOther").value.trim():cs?cs.name:sv.slice(2),btn=$("submit"),mpNum=$("mpPhone").value.trim();busy=true;btn.disabled=true;
   api("POST","/deliveries",{pay:mp?"mpesa":lt?"later":"cod",from:from,to:$("to").value,shop:shop,shopId:cs?cs.id:undefined,items:cs&&cartCount()?cartLines():undefined,custom:other,land:$("land").value.trim(),drop:$("drop").value.trim(),pp:pins.pick,dp:pins.drop,it:$("it").value.trim(),w:+$("wt").value,s:speed,rn:$("rn").value.trim(),rp:$("rp").value.trim()})
   .then(function(d){busy=false;btn.disabled=false;
     if(other&&!myShops.some(function(x){return x.a===from&&x.n.toLowerCase()===shop.toLowerCase()}))myShops.push({a:from,n:shop});
-    ["shopOther","land","drop","it","rn","rp"].forEach(function(k){$(k).value=""});cart={};cartShop=null;fillShops();initPins();
+    ["shopOther","land","it"].forEach(function(k){$(k).value=""});prefillOrder(true);cart={};cartShop=null;fillShops();initPins();
     if(d.payState==="awaiting"){go("hist");renderList(false,d.id);runPay(d,mpNum);return} /* order saved; now ask the phone for payment */
     toast("Request sent! ID "+d.id);go("hist");renderList(false,d.id)})
   .catch(function(e){busy=false;btn.disabled=false;$("err").textContent=e.message})});
@@ -568,6 +605,13 @@ var chatMsgs=[],chatWait=false;
 function chatReset(){chatMsgs=[];chatWait=false;var l=$("chatLog");if(l)l.textContent="";var b=$("chatBox");if(b)b.style.display="none"}
 function chatScroll(){var l=$("chatLog");l.scrollTop=l.scrollHeight}
 function chatAdd(cls,text){var m=el("div","cm "+cls,text);$("chatLog").appendChild(m);chatScroll();return m}
+function chatReport(m,q,a){var old=m.querySelector(".crp");if(old){old.remove();return}
+  var f=el("div","crp"),note=el("input");note.maxLength=300;note.placeholder="What was wrong? (optional)";note.setAttribute("aria-label","What was wrong with this answer");
+  f.appendChild(el("div","note","This sends your question, this answer and your note to SMD staff so we can improve the assistant."));f.appendChild(note);
+  var go=el("button","btn sec","Send report"),no=el("button","btn sec","Cancel");go.type=no.type="button";
+  go.onclick=function(){go.disabled=true;api("POST","/chat/report",{q:q,a:a,note:note.value}).then(function(){f.remove();var r=m.querySelector(".crb");if(r){r.textContent="Reported. Thank you.";r.disabled=true}},function(e){go.disabled=false;toast(e.message||"Could not send the report.")})};
+  no.onclick=function(){f.remove()};var row=el("div","btns");row.appendChild(go);row.appendChild(no);f.appendChild(row);m.appendChild(f);chatScroll();note.focus()}
+function chatReportBtn(m,q,a){var b=el("button","crb","⚑ Report this answer");b.type="button";b.setAttribute("aria-label","Report this answer");b.onclick=function(){chatReport(m,q,a)};m.appendChild(b)}
 function chatSuggest(){var box=$("chatSug");box.textContent="";if(chatMsgs.length)return;var r=me?me.role:"";
   var l=r==="shipper"?["How much have I earned?","What is my verification status?"]:r==="owner"?["How do I add my goods?","When do I get paid?"]:r==="sender"?["I want to send a parcel","Where is my order?","Bei ya Mombasa hadi Diani?"]:["How does SMD work?","Bei ya kutuma Mombasa hadi Diani?"];
   l.forEach(function(t){var b=el("button",null,t);b.type="button";b.addEventListener("click",function(){chatSend(t)});box.appendChild(b)})}
@@ -586,7 +630,7 @@ function chatDraft(d,m){var c=el("div","cd"),w=WT[d.w]?WT[d.w].l:"";
   var b=el("button","btn","Review & order");b.type="button";b.addEventListener("click",function(){applyDraft(d)});c.appendChild(b);m.appendChild(c);chatScroll()}
 function chatSend(text){text=String(text||"").trim();if(!text||chatWait)return;chatWait=true;$("chatSend").disabled=true;$("chatIn").value="";$("chatSug").textContent="";
   chatMsgs.push({role:"user",content:text});chatAdd("u",text);var wait=chatAdd("a typing","…");
-  api("POST","/chat",{messages:chatMsgs.slice(-20)}).then(function(j){wait.remove();chatMsgs.push({role:"assistant",content:j.reply});var m=chatAdd("a",j.reply);if(j.draft&&me&&me.role==="sender")chatDraft(j.draft,m)},
+  api("POST","/chat",{messages:chatMsgs.slice(-20)}).then(function(j){wait.remove();chatMsgs.push({role:"assistant",content:j.reply});var m=chatAdd("a",j.reply);chatReportBtn(m,text,j.reply);if(j.draft&&me&&me.role==="sender")chatDraft(j.draft,m)},
     function(e){wait.remove();chatMsgs.pop();$("chatIn").value=text;chatAdd("a err",e.message||"Something went wrong. Please try again.")})
   .then(function(){chatWait=false;$("chatSend").disabled=false;$("chatIn").focus()})}
 $("chatFab").addEventListener("click",chatOpen);$("chatX").addEventListener("click",chatClose);

@@ -65,7 +65,7 @@
     <b>Route</b>
     <svg id="formMap" viewBox="0 0 320 210" width="100%" role="img" aria-label="Selected route"></svg>
     <label for="from">Pickup area</label><select id="from"></select>
-    <label for="shopSel">Shop</label><select id="shopSel"></select>
+    <label for="shopSel">Shop</label><select id="shopSel"></select><p class="shopstat" id="shopStat"></p>
     <div id="otherWrap" style="display:none"><label for="shopOther">Shop name</label><input id="shopOther" maxlength="60" placeholder="Type the shop name"></div>
     <label for="land">Pickup landmark (optional)</label><input id="land" maxlength="100" placeholder="e.g. next to the petrol station">
     <div id="pin-pick"></div>
@@ -81,8 +81,9 @@
   <div class="card">
     <b>Item details</b>
     <label for="it" id="l-it">Item name</label><input id="it" maxlength="80" placeholder="e.g. Groceries, medicine, documents">
-    <label for="wt">Item weight</label><select id="wt"></select>
-    <div class="row"><div><label for="rn">Recipient name</label><input id="rn" maxlength="60"></div><div><label for="rp">Recipient phone</label><input id="rp" type="tel" inputmode="tel" placeholder="0712 345 678"></div></div>
+    <div class="who"><div><small>Deliver to</small><b id="whoLine">You</b></div><button type="button" class="lnk" id="whoEdit">Change</button></div>
+    <div id="whoBox" style="display:none"><div class="row"><div><label for="rn">Recipient name</label><input id="rn" maxlength="60" autocomplete="name"></div><div><label for="rp">Recipient phone</label><input id="rp" type="tel" inputmode="tel" placeholder="0712 345 678" autocomplete="tel"></div></div></div>
+    <details class="opt" id="wtBox"><summary>Weight <span id="wtSum">Up to 2 kg</span> <em>optional</em></summary><select id="wt" aria-label="Item weight"></select></details>
     <label>Speed</label>
     <div class="seg" id="spd"><button type="button" data-s="standard" class="on">🚚 Standard</button><button type="button" data-s="express">⚡ Express (+60%)</button></div>
     <div class="err" id="err" role="alert"></div>
@@ -135,6 +136,7 @@
 <section id="v-admin" class="view">
   <div class="card hero"><h2>Shipper review</h2><p>Check each shipper's details and ID photos before they can see jobs.</p></div>
   <div class="card"><div class="seg three" id="aTabs"><button type="button" data-t="pending" class="on">Pending</button><button type="button" data-t="approved">Approved</button><button type="button" data-t="rejected">Rejected</button></div></div>
+  <div id="rReports"></div>
   <div id="rShops"></div>
   <div id="alist"></div>
 </section>
@@ -176,6 +178,7 @@
   <div class="card"><div id="oState"></div><p class="note" id="oMoney"></p>
     <label for="o-name">Shop name</label><input id="o-name" maxlength="60"><button class="btn sec" id="o-save">Save name</button>
     <div class="err" id="oErr" role="alert"></div></div>
+  <div class="card" id="oHours"></div>
   <div class="card"><b>Add a good</b><div id="oAdd"></div></div>
   <div id="oList"></div>
 </section>

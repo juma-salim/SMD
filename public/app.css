@@ -137,3 +137,20 @@ footer.pw a{color:var(--mut)}
 .csug{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0}.csug button{border:1px solid var(--line);background:var(--bg);color:var(--tx);border-radius:999px;padding:7px 12px;font-size:13px;cursor:pointer}
 .cform{display:flex;gap:8px;align-items:center}.cform input{flex:1;margin:0}.cform .btn{width:auto;margin:0;padding:11px 16px}
 .cnote{margin:6px 2px 0;font-size:11px}
+.cm .crb{display:block;margin-top:6px;border:0;background:none;color:var(--mut,#6b7280);font-size:12px;padding:2px 0;cursor:pointer;text-decoration:underline}
+.cm .crp{margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--card);white-space:normal}.cm .crp input{width:100%;margin:6px 0}.cm .crp .btns{display:flex;gap:6px}.cm .crp .btn{margin:0;padding:8px;width:auto;flex:1}
+
+/* opening hours, shop status, shorter order form */
+.hr{display:grid;grid-template-columns:24px 38px 1fr 18px 1fr;gap:8px;align-items:center;margin-top:8px;font-size:14px;font-weight:600}
+.hr input[type=checkbox]{width:20px;height:20px;accent-color:var(--pri)}
+.hr select{padding:9px 6px;min-width:0;font-size:14px}.hr i{font-style:normal;color:var(--mut);font-size:12px;text-align:center}
+.hr.off span{color:var(--mut)}
+.shopstat{font-size:13px;font-weight:600;margin:6px 0 0}.shopstat.ok{color:var(--ok)}.shopstat.no{color:#d93025}
+.nb.closed b,.nb.closed small{opacity:.6}.lnk:disabled{color:var(--mut);cursor:default}
+.who{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px;padding:10px 12px;border:1.5px solid var(--line);border-radius:14px;background:var(--bg)}
+.who small{display:block;color:var(--mut);font-size:11px;font-weight:600}.who b{font-size:14px}
+details.opt{margin-top:12px;border:1.5px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--bg)}
+details.opt summary{cursor:pointer;font-size:14px;font-weight:600;list-style:none;display:flex;gap:6px;align-items:center}
+details.opt summary::-webkit-details-marker{display:none}
+details.opt summary span{color:var(--pri)}details.opt summary em{margin-left:auto;font-style:normal;font-size:11px;color:var(--mut)}
+details.opt select{margin-top:10px}

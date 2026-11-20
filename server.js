@@ -10,6 +10,7 @@ const {createClient} = require("@libsql/client");
 const C = require("./config");
 const M = require("./mpesa");
 const CHAT = require("./chat");
+const HOURS = require("./hours");
 
 const PROD = process.env.NODE_ENV === "production";
 const PORT = +process.env.PORT || 3000;
@@ -65,6 +66,8 @@ CREATE TABLE IF NOT EXISTS sub_areas(uid INTEGER NOT NULL, area TEXT NOT NULL, P
 CREATE TABLE IF NOT EXISTS push_subs(endpoint TEXT PRIMARY KEY, uid INTEGER NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ps_uid ON push_subs(uid);
 /* Assistant usage counters only (per person or address per day). Chat messages themselves are never stored. */
+/* Answers a person chose to report from the assistant chat (Google Play AI policy). Kept only because the person tapped Report. */
+CREATE TABLE IF NOT EXISTS chat_reports(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, uid INTEGER, role TEXT NOT NULL, q TEXT NOT NULL, a TEXT NOT NULL, note TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS chat_usage(k TEXT PRIMARY KEY, day TEXT NOT NULL, n INTEGER NOT NULL);
 /* Admin-set delivery fee for one pair of places (a|b stored in sorted order, so Likoni->Mombasa and Mombasa->Likoni share one fee) */
 CREATE TABLE IF NOT EXISTS fees(a TEXT NOT NULL, b TEXT NOT NULL, fee INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(a,b));
@@ -130,6 +133,8 @@ async function initDb() {
   await migrate();
   await db.executeMultiple(SCHEMA2);
   await addCol("catalog_shops", "owner_uid", "INTEGER"); /* set when a shop owner runs this shop */
+  await addCol("catalog_shops", "hours", "TEXT"); /* weekly opening hours as JSON; empty = always open */
+  await addCol("catalog_shops", "closed_now", "INTEGER NOT NULL DEFAULT 0"); /* the owner paused orders */
   await addCol("payments", "refunded", "INTEGER NOT NULL DEFAULT 0"); await addCol("payments", "refund_note", "TEXT");
   await seedCatalog();
   await syncAdmins();
@@ -357,6 +362,7 @@ const legalPage = (file) => (req, res, next) => {
     res.type("html").send(t.replace(/{{CONTACT}}/g, contact).replace(/{{DATE}}/g, "November 2026"));
   } catch (e) { next(e); }
 };
+app.get("/healthz", (req, res) => res.type("text").send("ok")); /* for Render health checks and uptime pingers */
 app.get(["/privacy", "/privacy-policy", "/terms", "/terms-and-privacy"], legalPage("terms.html"));
 app.get(["/delete-account", "/delete"], legalPage("delete-account.html"));
 app.use(express.static(path.join(__dirname, "public"), {index: "index.html", maxAge: PROD ? "1h" : 0, setHeaders: (res, p) => {
@@ -632,10 +638,17 @@ api.post("/admin/shippers/:id/approve", reviewer, wrap((req, res) => decide(req,
 api.post("/admin/shippers/:id/reject", reviewer, wrap((req, res) => decide(req, res, false)));
 
 /* Shop catalog: recommended shops first, each with its per-unit price list */
+/* What a customer (and the admin) sees about a shop's hours. The admin also gets the raw week to edit. */
+function shopHours(s, withWeek) {
+  const st = HOURS.status(s), o = {open: st.open, hoursLabel: st.label, hoursSet: st.hoursSet, paused: !!st.paused};
+  if (withWeek) { o.hours = HOURS.parse(s.hours); o.closedNow = !!s.closed_now; }
+  return o;
+}
+function closedMsg(s) { const st = HOURS.status(s); return s.name + " is closed right now" + (st.label.startsWith("Closed · ") ? " (" + st.label.slice(9) + ")" : st.paused ? " (taking a break from orders)" : "") + ". Please choose another shop or try again later."; }
 async function catalog(all) {
   const shops = await q("SELECT * FROM catalog_shops" + (all ? "" : " WHERE active=1") + " ORDER BY (owner_uid IS NOT NULL AND active=0) DESC, recommended DESC, name COLLATE NOCASE").all();
   const items = await q("SELECT * FROM catalog_items" + (all ? "" : " WHERE active=1") + " ORDER BY name COLLATE NOCASE, unit").all();
-  return shops.map((s) => ({id: s.id, area: s.area, name: s.name, rec: !!s.recommended, active: !!s.active, owned: s.owner_uid != null,
+  return shops.map((s) => ({id: s.id, area: s.area, name: s.name, rec: !!s.recommended, active: !!s.active, owned: s.owner_uid != null, ...shopHours(s, all),
     items: items.filter((i) => i.shop_id === s.id).map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}));
 }
 api.get("/shops", need("sender"), wrap(async (req, res) => res.json(await catalog(false))));
@@ -651,7 +664,8 @@ api.patch("/admin/shops/:id", need("admin"), wrap(async (req, res) => {
   const id = idp(req.params.id), s = await q("SELECT * FROM catalog_shops WHERE id=?").get(id); if (!s) bad("Not found.", 404); const b = req.body;
   const name = b.name !== undefined ? str(b.name, 2, 60, "Shop name") : s.name, area = b.area !== undefined ? (Object.hasOwn(C.AREAS, b.area) ? b.area : bad("Choose an area.")) : s.area;
   const flag = (v, cur) => (v === undefined ? cur : v ? 1 : 0);
-  try { await q("UPDATE catalog_shops SET name=?, area=?, recommended=?, active=? WHERE id=?").run(name, area, flag(b.rec, s.recommended), flag(b.active, s.active), id); } catch (e) { dupShop(e); }
+  let hours = s.hours; if (b.hours !== undefined) { try { const w = HOURS.clean(b.hours); hours = w ? JSON.stringify(w) : null; } catch (e) { bad(e.message); } }
+  try { await q("UPDATE catalog_shops SET name=?, area=?, recommended=?, active=?, hours=?, closed_now=? WHERE id=?").run(name, area, flag(b.rec, s.recommended), flag(b.active, s.active), hours, flag(b.closedNow, s.closed_now), id); } catch (e) { dupShop(e); }
   res.json({ok: true});
 }));
 api.delete("/admin/shops/:id", need("admin"), wrap(async (req, res) => { /* past orders keep their own copy of the shop name and prices */
@@ -687,12 +701,18 @@ const myShop = async (req) => (await q("SELECT * FROM catalog_shops WHERE owner_
 async function ownerView(sh) {
   const items = await q("SELECT * FROM catalog_items WHERE shop_id=? ORDER BY name COLLATE NOCASE, unit").all(sh.id);
   const L = await ledger(), sales = L.shops.get("s:" + sh.id) || {earned: 0, n: 0}, got = L.paid.get("shop|s:" + sh.id) || 0;
-  return {money: {earned: sales.earned, paid: got, owed: Math.max(0, sales.earned - got), orders: sales.n}, shop: {id: sh.id, name: sh.name, area: sh.area, approved: !!sh.active, rec: !!sh.recommended, items: items.map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}};
+  return {money: {earned: sales.earned, paid: got, owed: Math.max(0, sales.earned - got), orders: sales.n}, shop: {id: sh.id, name: sh.name, area: sh.area, approved: !!sh.active, rec: !!sh.recommended, ...shopHours(sh, true), items: items.map((i) => ({id: i.id, name: i.name, unit: i.unit, price: i.price, active: !!i.active}))}};
 }
 api.get("/owner/shop", need("owner"), wrap(async (req, res) => res.json(await ownerView(await myShop(req)))));
 api.patch("/owner/shop", need("owner"), wrap(async (req, res) => {
   const sh = await myShop(req), name = str(req.body.name, 2, 60, "Shop name");
   try { await q("UPDATE catalog_shops SET name=? WHERE id=?").run(name, sh.id); } catch (e) { dupShop(e); }
+  res.json(await ownerView(await myShop(req)));
+}));
+api.put("/owner/hours", need("owner"), wrap(async (req, res) => {
+  const sh = await myShop(req), b = req.body || {};
+  let week; try { week = HOURS.clean(b.hours); } catch (e) { bad(e.message); }
+  await q("UPDATE catalog_shops SET hours=?, closed_now=? WHERE id=?").run(week ? JSON.stringify(week) : null, b.closedNow ? 1 : 0, sh.id);
   res.json(await ownerView(await myShop(req)));
 }));
 api.post("/owner/items", need("owner"), wrap(async (req, res) => { const sh = await myShop(req); await addItem(sh.id, req.body); res.status(201).json(await ownerView(sh)); }));
@@ -716,14 +736,14 @@ api.post("/push/unsubscribe", need(), wrap(async (req, res) => {
 const shortName = (n) => { const p = String(n).trim().split(/\s+/); return p.length > 1 ? p[0] + " " + p[p.length - 1][0] + "." : p[0]; };
 api.get("/nearby", need("sender"), wrap(async (req, res) => {
   const a = String(req.query.area || ""); if (!Object.hasOwn(C.AREAS, a)) bad("Choose an area.");
-  const shops = await q("SELECT s.id, s.name, (SELECT COUNT(*) FROM catalog_items i WHERE i.shop_id=s.id AND i.active=1) goods FROM catalog_shops s WHERE s.area=? AND s.active=1 AND s.recommended=1 ORDER BY s.name COLLATE NOCASE LIMIT 12").all(a);
+  const shops = await q("SELECT s.id, s.name, s.hours, s.closed_now, (SELECT COUNT(*) FROM catalog_items i WHERE i.shop_id=s.id AND i.active=1) goods FROM catalog_shops s WHERE s.area=? AND s.active=1 AND s.recommended=1 ORDER BY s.name COLLATE NOCASE LIMIT 12").all(a);
   const rows = await q("SELECT id, name, veh FROM users WHERE role='shipper' AND status='approved' AND area=? AND email_verified=1").all(a), out = [];
   for (const r of rows) {
     if ((await q("SELECT COUNT(*) c FROM deliveries WHERE shipper=? AND step=1").get(r.id)).c >= 10) continue; /* fully booked: not available */
     out.push({name: shortName(r.name), veh: r.veh || "", ...(await stats(r.id))});
   }
   out.sort((x, y) => (y.avg || 0) - (x.avg || 0) || y.done - x.done);
-  res.json({area: a, shops: shops.map((s) => ({id: s.id, name: s.name, goods: Number(s.goods)})), shippers: out.slice(0, 10)});
+  res.json({area: a, shops: shops.map((s) => ({id: s.id, name: s.name, goods: Number(s.goods), ...shopHours(s)})).sort((x, y) => Number(y.open) - Number(x.open)), shippers: out.slice(0, 10)});
 }));
 api.post("/deliveries/:id/rate", need("sender"), wrap(async (req, res) => {
   const stars = req.body.stars; if (!Number.isInteger(stars) || stars < 1 || stars > 5) bad("Choose 1 to 5 stars.");
@@ -832,8 +852,13 @@ api.post("/deliveries", need("sender"), wrap(async (req, res) => {
   if (b.shopId != null) {
     const sh = Number.isInteger(b.shopId) && await q("SELECT * FROM catalog_shops WHERE id=? AND active=1").get(b.shopId);
     if (!sh || sh.area !== b.from) bad("That shop is not available in the chosen pickup area. Refresh and try again.", 409);
+    if (!HOURS.status(sh).open) bad(closedMsg(sh), 409);
     shop = sh.name; shopId = sh.id;
-  } else shop = str(b.shop, 2, 60, "Shop name");
+  } else {
+    shop = str(b.shop, 2, 60, "Shop name");
+    const reg = Object.hasOwn(C.AREAS, b.from) && await q("SELECT * FROM catalog_shops WHERE area=? AND name=? COLLATE NOCASE AND active=1").get(b.from, shop); /* typing a registered shop's name does not skip its opening hours */
+    if (reg && !HOURS.status(reg).open) bad(closedMsg(reg), 409);
+  }
   if (b.items != null && !(Array.isArray(b.items) && !b.items.length)) {
     if (shopId == null) bad("Listed goods can only be ordered from a listed shop.");
     if (!Array.isArray(b.items) || b.items.length > 20) bad("Choose up to 20 different goods.");
@@ -1034,6 +1059,19 @@ api.post("/chat", chatLimit, wrap(async (req, res) => {
   try { res.json(await chatBot.reply(u, msgs)); }
   catch (e) { console.error("chat failed:", e.message); bad("The assistant is busy right now. Please try again. / Msaidizi yuko busy, jaribu tena.", 502); }
 }));
+
+const reportLimit = rateLimit({windowMs: 60000, limit: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => (req.user ? "u" + req.user.id : req.ip), message: {error: "Too many reports. Please wait a minute."}});
+api.post("/chat/report", reportLimit, wrap(async (req, res) => {
+  const b = req.body || {}, clip = (v, n) => String(typeof v === "string" ? v : "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, n);
+  const qq = clip(b.q, 1000), aa = clip(b.a, 2000), note = clip(b.note, 300);
+  if (!qq || !aa) bad("Nothing to report.");
+  await q("INSERT INTO chat_reports(at,uid,role,q,a,note) VALUES(?,?,?,?,?,?)").run(Date.now(), req.user ? req.user.id : null, req.user ? req.user.role : "visitor", qq, aa, note);
+  await q("DELETE FROM chat_reports WHERE id NOT IN (SELECT id FROM chat_reports ORDER BY id DESC LIMIT 1000)").run(); /* keep the newest 1000 */
+  notifyAdmins("Assistant answer reported", "Someone reported an assistant answer.\n\nQuestion: " + qq.slice(0, 300) + "\nAnswer: " + aa.slice(0, 300) + (note ? "\nTheir note: " + note : "") + "\n\nOpen SMD > Review to see all reports.");
+  res.json({ok: true});
+}));
+api.get("/admin/chat-reports", need("admin"), wrap(async (req, res) => { res.json({reports: await q("SELECT id,at,role,q,a,note FROM chat_reports ORDER BY id DESC LIMIT 50").all()}); }));
+api.delete("/admin/chat-reports/:id", need("admin"), wrap(async (req, res) => { await q("DELETE FROM chat_reports WHERE id=?").run(idp(req.params.id)); res.json({ok: true}); }));
 
 api.get("/admin/fees", need("admin"), wrap(async (req, res) => res.json({fees: feeRows(), note: "Fee for one trip before weight surcharge and express."})));
 api.put("/admin/fees", need("admin"), wrap(async (req, res) => {

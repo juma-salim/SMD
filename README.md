@@ -124,3 +124,9 @@ Anthropic works too: set `ANTHROPIC_API_KEY` instead (if both are set, Groq is u
 Safety: every tool runs on the server for the signed-in person only, returns no phone numbers, emails or ID details, and chat messages are not stored (only a per-day message count). Limits per minute, per person per day, and a global daily cap (`CHAT_GLOBAL_DAILY`) keep usage under control.
 Free-tier note: Groq limits tokens per minute and per day for each model. `CHAT_MODEL` takes a comma-separated list; when one model is rate-limited the next answers. If all are limited, people see "busy, try again". Check Groq's current limits and data terms in your console.
 Test: `node test-chat.js` (uses a fake model, no key).
+
+## Opening hours
+Shop owners set weekly opening hours (East Africa Time) under My shop. Customers can only order from open shops; shops with no hours set count as always open. "Closed for now" pauses a shop. Tests: `node test-hours.js`.
+
+## Staying awake (Render)
+`/healthz` returns `ok`. On the free Render plan the server sleeps after ~15 minutes idle and the first visit takes up to a minute. Use a paid always-on instance, or ping `/healthz` every 5 minutes with a free uptime monitor.

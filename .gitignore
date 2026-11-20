@@ -3,12 +3,3 @@ node_modules/
 *.db-wal
 *.db-shm
 .env
-
-.idea/
-android/.gradle/
-android/local.properties
-android/build/
-android/app/build/
-*.jks
-*.keystore
-A.java
